@@ -12,13 +12,16 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
 use ratatui::Frame;
 
-pub const HELP: [&str; 15] = [
+pub const HELP: [&str; 18] = [
     "↑ ↓        choose a joint (M1 base … M7 wrist roll, M8 gripper)",
     "← →        move it by one step (real arm: needs ARMED)",
     "+ / -      bigger / smaller step: 1 · 5 · 20 ticks (gripper: 1 · 2 · 5 · 10)",
     "l / r      go to the level / rest pose (smooth 3 s move, asks first)",
     "L / R      save the current pose as level / rest",
     "G          save the gripper goal as the grip (re-applied by every run)",
+    "t          THROW PREVIEW without the ball, from level: 1 = 10 % · 2 = 25 % · 3 = 50 % · 4 = 100 % speed;",
+    "           the arm flips to the throw end pose, holds, and returns to level (asks first)",
+    "T          save the current pose as the throw end pose (blade upright, face toward the camera side)",
     "Esc        back to Home (releases the bus)",
     "",
     "4096 ticks = one turn (1 tick ≈ 0.09°). Joints stay within ±limit of the level pose",
@@ -86,6 +89,7 @@ impl PoseScreen {
                     }
                     self.moving = m;
                 }
+                DevMsg::Throw(m) => self.msg = Some((!m.contains("ABORTED"), m)),
                 DevMsg::Error(e) => self.msg = Some((false, e)),
                 DevMsg::Closed => closed = true,
             }
@@ -138,6 +142,62 @@ impl PoseScreen {
         }
     }
 
+    /// The preview starts from level: every joint within 30 ticks of it.
+    fn at_level(&self, ctx: &Ctx) -> Result<(), String> {
+        let (Some(level), Some(g)) = (ctx.cfg.poses.level, self.goals) else { return Err("no level pose saved".into()) };
+        match (0..7).find(|&j| (g[j] as i32 - level[j] as i32).abs() > 30) {
+            Some(j) => Err(format!("go to level first (l): M{} is {} ticks away", j + 1, g[j] as i32 - level[j] as i32)),
+            None => Ok(()),
+        }
+    }
+
+    fn throw_preview(&mut self, ctx: &Ctx, speed: f64) {
+        let (Some(g), Some(dev)) = (self.goals.as_mut(), &self.dev) else { return };
+        let Some(level) = ctx.cfg.poses.level else { return };
+        let plan = match crate::throw::plan(&ctx.cfg, &g[..7], speed) {
+            Ok(p) => p,
+            Err(e) => {
+                self.msg = Some((false, format!("throw refused: {e:#}")));
+                return;
+            }
+        };
+        let mut back = [0u16; 7];
+        back.copy_from_slice(&level[..7]);
+        g[..7].copy_from_slice(&back);
+        let t = &ctx.cfg.throw;
+        self.msg = Some((true, format!("throw preview at {:.0} % ({:.2} s move)...", speed * 100.0, plan.duration_s)));
+        let _ = dev.tx.send(DevCmd::Throw { plan, cfg: t.clone(), back, return_s: t.return_s });
+    }
+
+    fn save_throw_end(&mut self, ctx: &mut Ctx) {
+        let Some(g) = self.goals else { return };
+        let Some(level) = ctx.cfg.poses.level else {
+            self.msg = Some((false, "save the level pose first".into()));
+            return;
+        };
+        let lim = ctx.cfg.throw.limit_ticks;
+        if let Some(j) = (0..7).find(|&j| (g[j] as i32 - level[j] as i32).abs() > lim[j] as i32) {
+            self.msg = Some((false, format!(
+                "M{} is {} ticks from level; the throw allows ±{} (throw.limit_ticks)", j + 1, g[j] as i32 - level[j] as i32, lim[j]
+            )));
+            return;
+        }
+        let mut end = [0u16; 7];
+        end.copy_from_slice(&g[..7]);
+        let res = Config::load(&ctx.cfg_path).and_then(|mut c| {
+            c.throw.end = Some(end);
+            std::fs::write(&ctx.cfg_path, toml::to_string_pretty(&c)?)?;
+            Ok(c)
+        });
+        match res {
+            Ok(c) => {
+                ctx.cfg.throw = c.throw;
+                self.msg = Some((true, format!("saved throw end {:?}", end)));
+            }
+            Err(e) => self.msg = Some((false, format!("save failed: {e:#}"))),
+        }
+    }
+
     fn go(&mut self, ctx: &Ctx, which: char) {
         let pose = if which == 'l' { ctx.cfg.poses.level } else { ctx.cfg.poses.rest };
         let (Some(pose), Some(g), Some(dev)) = (pose, self.goals.as_mut(), &self.dev) else {
@@ -154,6 +214,21 @@ impl PoseScreen {
     /// Returns true to go back Home.
     pub fn key(&mut self, k: KeyEvent, ctx: &mut Ctx) -> bool {
         if let Some(p) = self.pending.take() {
+            if p == 't' {
+                let speed = match k.code {
+                    KeyCode::Char('1') => Some(0.10),
+                    KeyCode::Char('2') => Some(0.25),
+                    KeyCode::Char('3') => Some(0.50),
+                    KeyCode::Char('4') => Some(1.0),
+                    _ => None,
+                };
+                match speed {
+                    Some(sp) if ctx.armed() => self.throw_preview(ctx, sp),
+                    Some(_) => self.msg = Some((false, "press a to ARM first".into())),
+                    None => self.msg = Some((true, "throw preview cancelled".into())),
+                }
+                return false;
+            }
             if k.code == KeyCode::Char('y') {
                 if ctx.armed() {
                     self.go(ctx, p);
@@ -189,6 +264,18 @@ impl PoseScreen {
                 }
             }
             KeyCode::Char(c @ ('L' | 'R' | 'G')) => self.save_pose(ctx, c),
+            KeyCode::Char('T') => self.save_throw_end(ctx),
+            KeyCode::Char('t') => {
+                if !ctx.armed() {
+                    self.msg = Some((false, "press a to ARM first".into()));
+                } else if self.moving {
+                    self.msg = Some((false, "wait for the move to finish".into()));
+                } else if let Err(e) = self.at_level(ctx) {
+                    self.msg = Some((false, e));
+                } else {
+                    self.pending = Some('t');
+                }
+            }
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.leave();
                 return true;
@@ -230,10 +317,13 @@ impl PoseScreen {
     }
 
     pub fn keys(&self, ctx: &Ctx) -> Vec<(&'static str, &'static str)> {
+        if self.pending == Some('t') {
+            return vec![("1", "10 %"), ("2", "25 %"), ("3", "50 %"), ("4", "100 %"), ("any key", "cancel")];
+        }
         if self.pending.is_some() {
             return vec![("y", "go"), ("any key", "cancel")];
         }
-        let mut v = vec![("↑↓", "joint"), ("←→", "move"), ("+/-", "step"), ("l/r", "go level/rest"), ("L/R", "save level/rest"), ("G", "save grip")];
+        let mut v = vec![("↑↓", "joint"), ("←→", "move"), ("+/-", "step"), ("l/r", "go level/rest"), ("L/R", "save level/rest"), ("G", "save grip"), ("t", "throw preview"), ("T", "save throw end")];
         if !ctx.sim {
             v.insert(0, ("a", "arm"));
         }
@@ -319,8 +409,14 @@ impl PoseScreen {
             Line::from(vec![Span::styled(" level ", dim), Span::raw(pose(ctx.cfg.poses.level))]),
             Line::from(vec![Span::styled(" rest  ", dim), Span::raw(pose(ctx.cfg.poses.rest))]),
             Line::from(vec![Span::styled(" grip  ", dim), Span::raw(ctx.cfg.poses.grip.map_or("not saved".into(), |g| g.to_string()))]),
+            Line::from(vec![Span::styled(" throw ", dim), Span::raw(ctx.cfg.throw.end.map_or("not saved".into(), |p| format!("{:?}", p)))]),
         ];
-        if let Some(p) = self.pending {
+        if self.pending == Some('t') {
+            lines.push(Line::from(Span::styled(
+                " THROW PREVIEW, NO BALL: flip to the throw end pose and back to level. Speed? 1 = 10 % · 2 = 25 % · 3 = 50 % · 4 = 100 %, any other key = cancel",
+                Style::new().fg(Color::Yellow).bold(),
+            )));
+        } else if let Some(p) = self.pending {
             lines.push(Line::from(Span::styled(
                 format!(" Move every joint to the {} pose (smooth {:.0} s)? y = go, any other key = cancel", if p == 'l' { "LEVEL" } else { "REST" }, ctx.cfg.poses.move_time_s),
                 Style::new().fg(Color::Yellow).bold(),

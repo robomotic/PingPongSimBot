@@ -78,10 +78,21 @@ should walk through every screen with the user watching.
 - Known gap: the simulator matches the real offset size but wobbles slower (0.27 Hz vs 0.95 Hz real). Refit it once the
   ElRobotSysId servo data exists.
 
+## Throw back (2026-11-20, built, not yet run on the real arm)
+Balance `t` (ARMED, 2 s countdown, throw when the ball is within 25 mm), Pose `t` preview 10/25/50/100 % without the ball,
+`T` saves `throw.end`. Engine: `throw.rs` (plan: per-joint Goal Speed/Acc scaled by distance), `Arm::throw_move` (restores
+the profiles; aborts on stall), `Plant::throw`. MuJoCo model: `tools/throw_sim.py` (run with
+`MUJOCO_GL=glfw ~/.pyenv/versions/antifake/bin/python3`). Full speed: ball 2.0 m/s, apex 55 cm, lands 50 cm toward the
+camera side; <75 % hits the camera. **Absolute joint angles**: use the station viewer mapping (angle = lower + (tick −
+range_min)/(range_max − range_min)·(upper − lower), follower ranges in throw_sim.py), not `joints.zero/sign`, which puts
+the arm under the table. At level M2 and M4 sit at the ends of their calibrated ranges. Station calibration store is
+encrypted; read the ranges through station_py (MotorState.get_range_min/max) while the station runs.
+First real session: previews at 10 → 100 % with the user watching the grip, then a ball throw at 100 %.
+
 ## Code notes
 - `src/main.rs` re-exports the library modules (`use paddle_balance::{bus, …}`) so that `crate::bus` paths in `app.rs` work.
 - `vision::capture` and `app` are Linux-only (`cfg(target_os = "linux")`); other platforms build a stub binary.
-- Tests: `cargo test` (25 tests, including `default_gains_balance_a_delayed_ball`, `controller_balances_the_simulated_ball`
+- Tests: `cargo test` (31 tests, including the throw planner in `throw.rs`, including `default_gains_balance_a_delayed_ball`, `controller_balances_the_simulated_ball`
   (the real engine on SimPlant), and `first_real_run_matches_the_python_analysis`).
 - `analysis::lag_samples` correlates frame-to-frame changes (raw signals saturate on drift); it gives 5/5/4 frames on the real run.
 - `bus.rs` is duplicated in ElRobotSysId. Keep fixes in sync, or extract a shared crate if it grows.

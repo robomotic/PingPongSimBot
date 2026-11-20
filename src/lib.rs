@@ -11,4 +11,5 @@ pub mod control;
 pub mod estimator;
 pub mod kinematics;
 pub mod sim;
+pub mod throw;
 pub mod vision;

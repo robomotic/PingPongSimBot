@@ -208,6 +208,11 @@ impl App {
             self.confirm = None;
             return;
         }
+        // A pending throw is cancelled by any key, before anything else sees it.
+        if self.screen == Screen::Balance && self.balance.throw_pending() {
+            self.balance.cancel_throw();
+            return;
+        }
         match k.code {
             KeyCode::Char('?') => {
                 self.help = true;

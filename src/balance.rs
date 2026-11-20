@@ -7,7 +7,8 @@
 
 use crate::arm::{joint_rad, wrist_of};
 use crate::bus::MotorState;
-use crate::config::{Config, ControlConfig, N_MOTORS, WRIST};
+use crate::throw::{ThrowPlan, ThrowReport};
+use crate::config::{Config, ControlConfig, ThrowConfig, N_MOTORS, WRIST};
 use crate::control::{AxesMap, Backlash, BallPid};
 use crate::estimator::{AlphaBeta, Homography};
 use crate::kinematics::WristModel;
@@ -189,6 +190,11 @@ impl Balancer {
         self.paused = p;
     }
 
+    /// The ball is about to be thrown: close the balance segment (counts toward the longest balance).
+    pub fn end_for_throw(&mut self) {
+        self.end_balance();
+    }
+
     /// Call after the plant finished a [`Action::ReturnToLevel`].
     pub fn returned_to_level(&mut self) {
         self.wrist.reset();
@@ -295,6 +301,8 @@ pub trait Plant {
     async fn read_wrist(&mut self) -> Result<[MotorState; 3]>;
     /// Simulation only: put a ball on the paddle.
     fn place_ball(&mut self) {}
+    /// One fast throw move (see `throw.rs`).
+    async fn throw(&mut self, plan: &ThrowPlan, cfg: &ThrowConfig) -> Result<ThrowReport>;
 }
 
 /// The real arm and camera. Linux only (V4L2).
@@ -369,6 +377,9 @@ impl Plant for RealPlant {
         }
         Ok(out)
     }
+    async fn throw(&mut self, plan: &ThrowPlan, cfg: &ThrowConfig) -> Result<ThrowReport> {
+        self.arm.throw_move(plan, cfg.abort_load, cfg.timeout_factor).await
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -425,6 +436,9 @@ pub enum Cmd {
     SetControl(ControlConfig),
     Pause(bool),
     PlaceBall,
+    /// Start the throw countdown (the ball must be balancing).
+    Throw,
+    CancelThrow,
     Stop,
 }
 
@@ -437,6 +451,8 @@ pub struct Snapshot {
     pub current: [f64; 3],
     pub latency_ms: f64,
     pub control: ControlConfig,
+    /// Throw countdown: seconds left (0 = waiting for the ball to settle). None = no throw pending.
+    pub throw_in: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -477,6 +493,9 @@ pub async fn run_loop<P: Plant>(
     let mut no_frame_since: Option<Instant> = None;
     let mut wrist_state = [MotorState::default(); 3];
     let no_frame = Duration::from_secs_f64(bal.cfg.safety.no_frame_s);
+    // Throw countdown: (when the countdown ends, the plan).
+    let mut throw_at: Option<(Instant, ThrowPlan)> = None;
+    let mut throws = 0u32;
 
     let result: Result<()> = async {
         loop {
@@ -487,6 +506,27 @@ pub async fn run_loop<P: Plant>(
                         Some(Cmd::SetControl(c)) => { bal.set_control(c); emit(Event::Status("gains updated".into())); }
                         Some(Cmd::Pause(p)) => { bal.set_paused(p); emit(Event::Status(if p { "paused: holding level".into() } else { "resumed: put the ball on the paddle".into() })); }
                         Some(Cmd::PlaceBall) => plant.place_ball(),
+                        Some(Cmd::Throw) => {
+                            if bal.phase() != Phase::Balance {
+                                emit(Event::Status("throw: put the ball on the paddle first".into()));
+                            } else {
+                                match crate::throw::plan(&bal.cfg, &level, bal.cfg.throw.speed) {
+                                    Ok(p) => {
+                                        emit(Event::Status(format!(
+                                            "THROW in {:.0} s at {:.0} % speed ({:.2} s move): any key cancels",
+                                            bal.cfg.throw.delay_s, p.speed_frac * 100.0, p.duration_s
+                                        )));
+                                        throw_at = Some((Instant::now() + Duration::from_secs_f64(bal.cfg.throw.delay_s), p));
+                                    }
+                                    Err(e) => emit(Event::Status(format!("throw refused: {e:#}"))),
+                                }
+                            }
+                        }
+                        Some(Cmd::CancelThrow) => {
+                            if throw_at.take().is_some() {
+                                emit(Event::Status("throw cancelled".into()));
+                            }
+                        }
                     }
                     continue;
                 }
@@ -504,6 +544,28 @@ pub async fn run_loop<P: Plant>(
             last_frame = Instant::now();
 
             let (action, tele) = bal.on_frame(&det, wrist_of(&plant.cmd()));
+            // Throw: after the countdown, go as soon as the ball is near the centre and slow.
+            let mut throw_now = None;
+            let mut throw_in = None;
+            if let Some((at, _)) = &throw_at {
+                let tc = &bal.cfg.throw;
+                let now = Instant::now();
+                if tele.phase != Phase::Balance || matches!(action, Action::ReturnToLevel(_)) {
+                    throw_at = None;
+                    emit(Event::Status("throw cancelled: the ball left the paddle".into()));
+                } else if now < *at {
+                    throw_in = Some((*at - now).as_secs_f64());
+                } else if tele.pos.norm() <= tc.centre_mm && tele.vel.norm() <= tc.settle_speed_mm_s {
+                    throw_now = throw_at.take().map(|(_, p)| p);
+                } else if (now - *at).as_secs_f64() > tc.settle_timeout_s {
+                    throw_at = None;
+                    emit(Event::Status(format!(
+                        "throw cancelled: the ball didn't settle within {:.0} mm of the centre", tc.centre_mm
+                    )));
+                } else {
+                    throw_in = Some(0.0);
+                }
+            }
             match &action {
                 Action::Hold => {}
                 Action::SendWrist(g) => plant.send_wrist(*g).await?,
@@ -533,12 +595,27 @@ pub async fn run_loop<P: Plant>(
                 current: [wrist_state[0].current_ma, wrist_state[1].current_ma, wrist_state[2].current_ma],
                 latency_ms,
                 control: bal.cfg.control.clone(),
+                throw_in,
             };
             log.write(&snap)?;
             if let Some(e) = &snap.tele.event {
                 emit(Event::Status(e.clone()));
             }
             emit(Event::Frame(Box::new(snap)));
+            if let Some(plan) = throw_now {
+                emit(Event::Status("THROW".into()));
+                bal.end_for_throw();
+                let rep = plant.throw(&plan, &bal.cfg.throw).await;
+                throws += 1;
+                let rep = rep?;
+                emit(Event::Status(rep.summary()));
+                tokio::time::sleep(Duration::from_secs_f64(bal.cfg.throw.hold_s)).await;
+                emit(Event::Status("back to level...".into()));
+                plant.move_to(&level, bal.cfg.throw.return_s).await?;
+                bal.returned_to_level();
+                emit(Event::Status(format!("level: put the ball on the paddle ({throws} throw{} so far)", if throws == 1 { "" } else { "s" })));
+                continue;
+            }
             if let Action::ReturnToLevel(_) = action {
                 plant.move_to(&level, 0.7).await?;
                 bal.returned_to_level();

@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-pub const HELP: [&str; 14] = [
+pub const HELP: [&str; 16] = [
     "Space        start (real arm: needs ARMED) · while running: pause / resume (holds level)",
     "Esc          stop: the arm returns to its start pose · when stopped: back to Home",
     "b            simulation: put a ball on the paddle",
@@ -29,6 +29,8 @@ pub const HELP: [&str; 14] = [
     "s            save the tuning to paddle.toml ([control] only)",
     "Enter        after a run: open it in Results",
     "a            ARM / disarm the real arm",
+    "t            THROW the ball back (needs ARMED and a balancing ball): 2 s countdown, then a fast flip to the",
+    "             taught end pose ([throw] in paddle.toml) and back to level. Any key cancels the countdown.",
     "",
     "Blade view: grey = blade (Ø150), red = edge limit, dim = deadband, orange = ball, yellow = trail, magenta = tilt.",
     "Up = far side of the blade (away from the gripper), down = handle.",
@@ -134,6 +136,8 @@ pub struct BalanceScreen {
     stats: Stats,
     stats_at: Instant,
     last: Option<Snapshot>,
+    /// When `t` was pressed (the loop's countdown shows up in the next frame).
+    throw_req: Option<Instant>,
 }
 
 const HIST_FRAMES: usize = 29 * 20;
@@ -152,11 +156,48 @@ impl BalanceScreen {
             stats: Stats::default(),
             stats_at: Instant::now(),
             last: None,
+            throw_req: None,
         }
     }
 
     pub fn running(&self) -> bool {
         matches!(self.run, Run::Running { .. })
+    }
+
+    /// A throw countdown is running (any key cancels it).
+    pub fn throw_pending(&self) -> bool {
+        self.running()
+            && (self.throw_req.is_some_and(|t| t.elapsed().as_millis() < 400)
+                || self.last.as_ref().is_some_and(|s| s.tele.phase == Phase::Balance && s.throw_in.is_some()))
+    }
+
+    pub fn cancel_throw(&mut self) {
+        self.throw_req = None;
+        if let Run::Running { tx, .. } = &self.run {
+            let _ = tx.send(Cmd::CancelThrow);
+        }
+    }
+
+    fn request_throw(&mut self, ctx: &mut Ctx) {
+        let Run::Running { tx, paused, .. } = &self.run else {
+            self.msg("throw: start a run first (Space) and put the ball on the paddle");
+            return;
+        };
+        if *paused {
+            self.msg("throw: resume first (Space)");
+            return;
+        }
+        if !ctx.armed() {
+            self.msg("press a to ARM first: the throw is a fast, large move");
+            return;
+        }
+        if !self.last.as_ref().is_some_and(|s| s.tele.phase == Phase::Balance) {
+            self.msg("throw: wait until the ball is balancing");
+            return;
+        }
+        let _ = tx.send(Cmd::Throw);
+        self.throw_req = Some(Instant::now());
+        ctx.disarm();
     }
 
     fn msg(&mut self, m: impl Into<String>) {
@@ -365,6 +406,7 @@ impl BalanceScreen {
                     Err(e) => self.msg(format!("save failed: {e:#}")),
                 }
             }
+            KeyCode::Char('t') => self.request_throw(ctx),
             KeyCode::Char('b') => {
                 if let Run::Running { tx, .. } = &self.run {
                     if ctx.sim {
@@ -411,7 +453,10 @@ impl BalanceScreen {
                 v
             }
             Run::Running { paused, .. } => {
-                let mut v = vec![("Space", if *paused { "resume" } else { "pause" }), ("Esc", "stop")];
+                if self.throw_pending() {
+                    return vec![("any key", "cancel the throw")];
+                }
+                let mut v = vec![("Space", if *paused { "resume" } else { "pause" }), ("Esc", "stop"), ("t", "throw")];
                 if ctx.sim {
                     v.push(("b", "ball"));
                 }
@@ -443,7 +488,18 @@ impl BalanceScreen {
         let tilt = self.last.as_ref().map(|s| s.tele.tilt);
         let trail: Vec<(f64, f64)> = self.trail.iter().copied().collect();
         let phase = self.last.as_ref().map(|s| (s.tele.phase, s.tele.paused));
+        let throw_in = self.last.as_ref().and_then(|s| s.throw_in).filter(|_| self.running());
         let title = match (&self.run, phase) {
+            (Run::Running { .. }, Some((Phase::Balance, _))) if throw_in.is_some() => {
+                let t = throw_in.unwrap_or(0.0);
+                if t > 0.0 {
+                    let total = 2.0f64.max(t);
+                    let n = ((t / total) * 10.0).ceil() as usize;
+                    format!(" THROW in {t:.1} s {}{} · any key cancels ", "█".repeat(n), "░".repeat(10 - n.min(10)))
+                } else {
+                    " THROW: waiting for the ball to settle · any key cancels ".to_string()
+                }
+            }
             (Run::Running { .. }, Some((_, true))) => " blade · paused ".to_string(),
             (Run::Running { .. }, Some((Phase::Balance, _))) => {
                 format!(" blade · balancing {:.1} s ", self.last.as_ref().map_or(0.0, |s| s.tele.balance_s))

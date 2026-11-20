@@ -135,3 +135,35 @@ grip_backoff_load = 600
 [system]
 station_service = "normacore-station"
 camera_usb_vendor = "0c45"
+
+[throw]
+end = [
+    1999,
+    1015,
+    1763,
+    3131,
+    1880,
+    1237,
+    2220,
+]
+speed = 1.0
+max_speed_steps = 3070
+acc = 254
+delay_s = 2.0
+centre_mm = 25.0
+settle_speed_mm_s = 60.0
+settle_timeout_s = 4.0
+hold_s = 0.6
+return_s = 2.0
+min_joint_ticks = 20
+limit_ticks = [
+    60,
+    60,
+    400,
+    300,
+    60,
+    800,
+    60,
+]
+abort_load = 950
+timeout_factor = 3.0

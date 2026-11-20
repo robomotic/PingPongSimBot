@@ -137,6 +137,18 @@ impl Bus {
         self.sync_write(RamRegister::GoalPosition.address(), data).await
     }
 
+    pub async fn sync_write_u16(&mut self, reg: RamRegister, values: &[(u8, u16)]) -> Result<()> {
+        let data = values.iter().map(|&(id, v)| (id, Bytes::copy_from_slice(&v.to_le_bytes()))).collect();
+        self.sync_write(reg.address(), data).await
+    }
+
+    /// Acc (1 byte) and Goal Speed (2 bytes) of one servo: the profile it uses for position moves.
+    pub async fn read_profile(&mut self, id: u8) -> Result<(u8, u16)> {
+        let acc = self.read_bytes(id, RamRegister::Acc.address(), 1).await?[0];
+        let sp = self.read_bytes(id, RamRegister::GoalSpeed.address(), 2).await?;
+        Ok((acc, u16::from_le_bytes([sp[0], sp[1]])))
+    }
+
     pub async fn sync_write_u8(&mut self, reg: RamRegister, values: &[(u8, u8)]) -> Result<()> {
         let data = values.iter().map(|&(id, v)| (id, Bytes::copy_from_slice(&[v]))).collect();
         self.sync_write(reg.address(), data).await

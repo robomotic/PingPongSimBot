@@ -17,6 +17,8 @@ use crate::control::{AxesMap, BALL_ACCEL_PER_RAD};
 use crate::estimator::Homography;
 use crate::kinematics::WristModel;
 use crate::vision::{Blob, Detection};
+use crate::config::ThrowConfig;
+use crate::throw::{ThrowPlan, ThrowReport};
 use anyhow::{Context, Result};
 use nalgebra::Vector2;
 use std::collections::VecDeque;
@@ -228,6 +230,29 @@ impl Plant for SimPlant {
             };
         }
         Ok(out)
+    }
+    async fn throw(&mut self, plan: &ThrowPlan, _cfg: &ThrowConfig) -> Result<ThrowReport> {
+        // The simulated blade can't fling the ball (see tools/throw_sim.py for the physics): the move just takes
+        // the planned time and the ball is gone.
+        tokio::time::sleep(Duration::from_secs_f64(plan.duration_s)).await;
+        for j in 0..7 {
+            if plan.moving[j] {
+                self.cmd[j] = plan.goals[j];
+            }
+        }
+        let w = wrist_of(&self.cmd).map(|t| t as f64);
+        self.queue.clear();
+        self.target = w;
+        self.present = w;
+        self.ball = None;
+        self.next_at = Instant::now();
+        let mut peak = [0i16; 7];
+        for j in 0..7 {
+            if plan.moving[j] {
+                peak[j] = (150.0 + 300.0 * plan.speed_frac) as i16;
+            }
+        }
+        Ok(ThrowReport { move_s: plan.duration_s, peak_load: peak, ..Default::default() })
     }
     fn place_ball(&mut self) {
         let r = 15.0 + 15.0 * self.rng.uniform();
