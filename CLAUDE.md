@@ -59,10 +59,15 @@ Sibling repo: robomotic/ElRobotSysId (servo system ID for the MuJoCo model).
 ## Full-screen app (in progress, 2026-11-20)
 The user dislikes typing numbers and commands, so everything is moving into one ratatui app with the same keys on every screen
 (see README "Full-screen app"). Done: **Balance** (live tuning, live stats), **Results** (compare runs), **Home** (station stop/start, camera re-attach,
-read-only bus check), **Pose** (joints + gripper; replaces jog and grip; safety.pose_limit_ticks box around level). Screenshots in docs/screenshots (regenerate with tools/tui_drive.py `p:` steps; locally pyte lives in
+read-only bus check), **Pose** (joints + gripper; replaces jog and grip; safety.pose_limit_ticks box around level), **Camera** (live
+preview, detector view, live HSV/exposure tuning), **Calibrate** (camera-map wizard with auto-capture). Screenshots in docs/screenshots (regenerate with tools/tui_drive.py `p:` steps; locally pyte lives in
 the pyenv env `~/.pyenv/versions/antifake/bin/python3`).
-Next, one at a time: Calibration wizard (auto-capture when the ball is still) → Camera (half-block live preview,
-HSV tuning) → System ID in ElRobotSysId (needs the table safety area first: ElRobotSysId issue #1).
+Next: axis calibration + joint probe inside Calibrate (they move the wrist: need ARMED) → System ID in ElRobotSysId
+(needs the table safety area first: ElRobotSysId issue #1). Nothing new has run on the real arm yet: first real session
+should walk through every screen with the user watching.
+- Camera: `vision::Camera` handle (real V4L2 thread or `start_sim_camera`), `Tuning` shared with the capture thread
+  (versioned), low-res `Preview` only while a screen asks. The simulated camera renders blade + ball through the inverse
+  map and runs the real detector (flat-disc perspective bias ~2.5 mm near/far).
 - Pose uses `tui/device.rs`: a background task that owns the arm (real `Arm` or `SimArm`) and streams all 8 servo states at
   10 Hz. Leaving the screen drops it and releases the bus. Pose and Balance never own the bus at the same time.
 - Engine: `balance::Balancer` is pure (frame in → action + telemetry out). `balance::run_loop` drives any `Plant`

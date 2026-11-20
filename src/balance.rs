@@ -301,7 +301,7 @@ pub trait Plant {
 #[cfg(target_os = "linux")]
 pub struct RealPlant {
     arm: crate::arm::Arm,
-    cam: crate::vision::capture::Camera,
+    cam: crate::vision::Camera,
     start: [u16; N_MOTORS],
 }
 

@@ -63,16 +63,22 @@ camera noise.
 | **Home** | Station (`x` stop/start, asks first), camera (`c` re-attach after the station), bus (`r` read-only check: servos, voltage, temperature, gripper load), config status. Quitting offers to restart a station the app stopped. |
 | **Results** | Every run in `paddle_logs/` and `data/` with its statistics (same as `tools/analyze_run.py`). `c` marks a reference run for a side-by-side comparison with a green/red Δ. |
 | **Pose** | All 8 servos live (goal, present, miss, distance from level, load, temperature). ↑↓ joint, ←→ move by 1/5/20 ticks, `l`/`r` go to level/rest (asks first), `L`/`R` save level/rest, `G` save the grip. Each joint stays within `safety.pose_limit_ticks` of level, so manual moves stay above the table. The gripper (M8) is in the same table, with automatic back-off above `safety.grip_backoff_load`. Replaces `jog` and `grip`. |
-| Camera, Calibrate, System ID | coming next (the line commands below still work) |
+| **Camera** | Live picture (true-colour half blocks) with the detected ball marked. `m` switches to the **detector view** (pixels in the colour range turn magenta). ↑↓ ←→ tune hue / saturation / brightness limits, minimum blob size and exposure **live**; `s` saves them. Shows fps, found %, false blobs, the ball's colour and its blade position. |
+| **Calibrate** | Camera-map wizard: highlights the mark to use, **captures automatically** when the ball has been still for ~1 s, fits the map, shows the error per mark, Enter saves. (Axis calibration and the joint probe: `calib-axes`, `probe-joints` for now.) |
+| System ID | in [ElRobotSysId](https://github.com/robomotic/ElRobotSysId) (needs its table safety area first) |
 
 ![Balance screen: ball on the blade, live tuning, statistics](docs/screenshots/balance.png)
 
 <details>
-<summary>More screens: Home, Pose, help overlay, Results comparison</summary>
+<summary>More screens: Home, Pose, Camera, Calibrate, help overlay, Results comparison</summary>
 
 ![Home: station, camera and bus status](docs/screenshots/home.png)
 
 ![Pose: joints and gripper, with safe ranges around level](docs/screenshots/pose.png)
+
+![Camera: detector view while tuning the colour range](docs/screenshots/camera-detector.png)
+
+![Calibrate: all five marks captured automatically](docs/screenshots/calibrate.png)
 
 ![Help overlay on the Balance screen](docs/screenshots/balance-help.png)
 
@@ -146,7 +152,8 @@ src/balance.rs     balancing engine: Balancer (frame -> action), Plant trait (Re
 src/sim.rs         SimPlant: simulated servos (delay, lag, dead zone) + ball + camera, fitted to the real run
 src/analysis.rs    run statistics (Rust port of analyze_run.py) and live-stat helpers
 src/app.rs         line-based subcommands (scan, jog, calib-*, probe-joints, run)
-src/tui/           full-screen app (ratatui): mod.rs (shell, keys, help), balance.rs, results.rs
+src/tui/           full-screen app (ratatui): mod.rs (shell, keys, help, Home), system.rs (station/camera/bus),
+                   balance.rs, results.rs, pose.rs + device.rs (arm task), camera.rs, calibrate.rs, camview.rs
 src/grip_tui.rs    gripper adjuster (crossterm; moves into the app next)
 ```
 
