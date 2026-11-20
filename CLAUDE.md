@@ -61,8 +61,8 @@ The user dislikes typing numbers and commands, so everything is moving into one 
 (see README "Full-screen app"). Done: **Balance** (live tuning, live stats), **Results** (compare runs), **Home** (station stop/start, camera re-attach,
 read-only bus check), **Pose** (joints + gripper; replaces jog and grip; safety.pose_limit_ticks box around level). Screenshots in docs/screenshots (regenerate with tools/tui_drive.py `p:` steps; locally pyte lives in
 the pyenv env `~/.pyenv/versions/antifake/bin/python3`).
-Next, one at a time: Pose (replaces `jog`) → Calibration wizard (auto-capture
-when the ball is still) → Camera (half-block live preview, HSV tuning) → Gripper (move grip_tui in) → System ID in ElRobotSysId.
+Next, one at a time: Calibration wizard (auto-capture when the ball is still) → Camera (half-block live preview,
+HSV tuning) → System ID in ElRobotSysId (needs the table safety area first: ElRobotSysId issue #1).
 - Pose uses `tui/device.rs`: a background task that owns the arm (real `Arm` or `SimArm`) and streams all 8 servo states at
   10 Hz. Leaving the screen drops it and releases the bus. Pose and Balance never own the bus at the same time.
 - Engine: `balance::Balancer` is pure (frame in → action + telemetry out). `balance::run_loop` drives any `Plant`
