@@ -457,7 +457,7 @@ fn confirm_popup(f: &mut Frame, text: &str) {
 fn header(f: &mut Frame, area: Rect, title: &str, c: &Ctx, running: bool) {
     let mut spans = vec![Span::styled(format!(" {title} "), Style::new().fg(Color::Black).bg(Color::Cyan).bold()), Span::raw("  ")];
     if c.sim {
-        spans.push(Span::styled(" SIM ", Style::new().fg(Color::Black).bg(Color::Blue).bold()));
+        spans.push(Span::styled(" SIM ", Style::new().fg(Color::White).bg(Color::Blue).bold()));
     } else if c.armed() {
         let left = c.armed_until.map_or(0, |t| t.saturating_duration_since(Instant::now()).as_secs());
         spans.push(Span::styled(format!(" ⚠ ARMED {left:>2}s "), Style::new().fg(Color::White).bg(Color::Red).bold()));

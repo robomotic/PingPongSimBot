@@ -60,8 +60,25 @@ camera noise.
 | Screen | What it does |
 |---|---|
 | **Balance** | Space starts (rest → level → wait for the ball → balance). It shows the blade from above with the ball, its trail and the tilt arrow; a **live tuning** panel (↑↓ choose, ←→ change, applied at once); live statistics (offset, wobble Hz/mm, servo lag, current, latency, deadband); the distance-from-centre sparkline; and a status log. `0`/`1`/`2` load the first-run / test A / test B gains, `s` saves the tuning, Esc stops and returns to the start pose. |
+| **Home** | Station (`x` stop/start, asks first), camera (`c` re-attach after the station), bus (`r` read-only check: servos, voltage, temperature, gripper load), config status. Quitting offers to restart a station the app stopped. |
 | **Results** | Every run in `paddle_logs/` and `data/` with its statistics (same as `tools/analyze_run.py`). `c` marks a reference run for a side-by-side comparison with a green/red Δ. |
 | Pose, Gripper, Camera, Calibrate, System ID | coming next (the line commands below still work) |
+
+![Balance screen: ball on the blade, live tuning, statistics](docs/screenshots/balance.png)
+
+<details>
+<summary>More screens: Home, help overlay, Results comparison</summary>
+
+![Home: station, camera and bus status](docs/screenshots/home.png)
+
+![Help overlay on the Balance screen](docs/screenshots/balance-help.png)
+
+![Results: a simulated run compared with the first real run](docs/screenshots/results.png)
+
+</details>
+
+The screenshots come from simulation sessions driven headless by `tools/tui_drive.py` (`p:FILE.png` steps), so they can be
+regenerated after UI changes.
 
 Same keys everywhere: ↑↓ select · ←→ adjust · +/- step size · Space main action · Enter confirm · s save · ? help ·
 Esc back / q quit · **Ctrl-C emergency stop** (the arm returns to its start pose). Anything that moves the real arm needs the
@@ -96,7 +113,7 @@ All settings and calibrations live in `paddle.toml`. Each run writes `paddle_log
 
 | | |
 |---|---|
-| `tools/tui_drive.py` | run the full-screen app headless in a pseudo-terminal, send keys, print the screen (testing; needs `pyte`) |
+| `tools/tui_drive.py` | run the full-screen app headless in a pseudo-terminal, send keys, print the screen or save PNG screenshots (needs `pyte`, `Pillow`) |
 | `tools/analyze_run.py <csv>` | balance segments, ball offset, limit-cycle frequency and amplitude, servo lag, latency, deadband use |
 | `tools/tune_sim.py` | 2-axis sim fitted to the real run (delay, servo lag, slop, noise); grid-searches gains |
 | `tools/station_read_positions.py` | read all servo positions through a running station (read-only), e.g. after teleop |

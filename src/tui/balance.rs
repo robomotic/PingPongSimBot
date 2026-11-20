@@ -30,7 +30,7 @@ pub const HELP: [&str; 14] = [
     "Enter        after a run: open it in Results",
     "a            ARM / disarm the real arm",
     "",
-    "Blade view: grey = blade (Ø150), red = edge limit, dim = deadband, yellow = ball trail.",
+    "Blade view: grey = blade (Ø150), red = edge limit, dim = deadband, orange = ball, yellow = trail, magenta = tilt.",
     "Up = far side of the blade (away from the gripper), down = handle.",
     "Statistics cover the last 10 s of balancing.",
 ];
@@ -470,8 +470,13 @@ impl BalanceScreen {
                 c.layer();
                 c.draw(&Points { coords: &trail, color: Color::Yellow });
                 if let Some(b) = ball {
-                    c.draw(&Circle { x: b.x, y: b.y, radius: 20.0, color: Color::LightRed });
-                    c.draw(&Circle { x: b.x, y: b.y, radius: 3.0, color: Color::LightRed });
+                    // Solid orange disc (Ø40 mm ball): concentric rings fill it in Braille.
+                    let orange = Color::Indexed(208);
+                    let mut r = 20.0;
+                    while r > 0.5 {
+                        c.draw(&Circle { x: b.x, y: b.y, radius: r, color: orange });
+                        r -= 1.2;
+                    }
                 }
                 c.print(-12.0, 80.0, Line::from("far").fg(Color::DarkGray));
                 c.print(-18.0, -84.0, Line::from("handle").fg(Color::DarkGray));
