@@ -374,7 +374,7 @@ impl Plant for RealPlant {
 // ---------------------------------------------------------------------------------------------------------------
 // Run log (CSV). The active gains are on every row, so live tuning is visible in the analysis.
 
-pub const LOG_HEADER: &str = "t,state,seq,found,px,py,area,blobs,bx,by,vx,vy,tilt_x,tilt_y,u,v,g5,g6,g7,p5,p6,p7,i5,i6,i7,latency_ms,detect_ms,kp,kd,bl5,bl6,bl7,deadband_mm";
+pub const LOG_HEADER: &str = "t,state,seq,found,px,py,area,blobs,bx,by,vx,vy,tilt_x,tilt_y,u,v,g5,g6,g7,p5,p6,p7,i5,i6,i7,latency_ms,detect_ms,kp,kd,bl5,bl6,bl7,deadband_mm,ki";
 
 pub struct RunLog {
     pub path: PathBuf,
@@ -399,13 +399,13 @@ impl RunLog {
         let c = &s.control;
         writeln!(
             self.w,
-            "{:.4},{:?},{},{},{:.1},{:.1},{},{},{:.2},{:.2},{:.1},{:.1},{:.5},{:.5},{:.5},{:.5},{},{},{},{},{},{},{:.0},{:.0},{:.0},{:.1},{:.1},{},{},{},{},{},{}",
+            "{:.4},{:?},{},{},{:.1},{:.1},{},{},{:.2},{:.2},{:.1},{:.1},{:.5},{:.5},{:.5},{:.5},{},{},{},{},{},{},{:.0},{:.0},{:.0},{:.1},{:.1},{},{},{},{},{},{},{}",
             t.t.saturating_duration_since(self.t0).as_secs_f64(),
             t.phase, t.seq, t.ball.is_some() as u8, px.x, px.y, t.area, t.n_blobs,
             b.x, b.y, t.vel.x, t.vel.y, t.tilt.x, t.tilt.y, t.uv.x, t.uv.y,
             s.goal[0], s.goal[1], s.goal[2], s.present[0], s.present[1], s.present[2],
             s.current[0], s.current[1], s.current[2], s.latency_ms, t.detect_ms,
-            c.kp, c.kd, c.backlash_ticks[0], c.backlash_ticks[1], c.backlash_ticks[2], c.deadband_mm
+            c.kp, c.kd, c.backlash_ticks[0], c.backlash_ticks[1], c.backlash_ticks[2], c.deadband_mm, c.ki
         )?;
         Ok(())
     }

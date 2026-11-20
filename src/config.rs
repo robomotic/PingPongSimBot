@@ -231,7 +231,7 @@ impl Default for ControlConfig {
             beta: 0.2,
             predict_ms: 60.0,
             min_goal_step_ticks: 2,
-            backlash_ticks: [0.0, 0.0, 0.0],
+            backlash_ticks: [4.0, 16.0, 6.0],
             null_space_gain: 0.05,
             damping: 0.02,
         }

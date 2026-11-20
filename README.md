@@ -97,7 +97,7 @@ Same keys everywhere: ↑↓ select · ←→ adjust · +/- step size · Space m
 Esc back / q quit · **Ctrl-C emergency stop** (the arm returns to its start pose). Anything that moves the real arm needs the
 **ARMED** state (`a`), which switches itself off after 30 s without a key.
 
-Every run log now records the active gains (kp, kd, slop, deadband) on each row, so live tuning shows up in Results.
+Every run log now records the active gains (kp, kd, ki, slop, deadband) on each row, so live tuning shows up in Results.
 
 ## Session on the robot
 
@@ -121,6 +121,20 @@ sudo systemctl start normacore-station
 ```
 
 All settings and calibrations live in `paddle.toml`. Each run writes `paddle_logs/run_<stamp>.csv`.
+
+## Calibrations: what they are and when to redo them
+
+The camera sits on the wrist and sees the blade at a slant, so a pixel doesn't map to a fixed distance on the blade:
+about 3.0 px/mm sideways but only about 0.66 px/mm near/far. Two calibrations turn what the camera sees into tilt commands.
+
+| Calibration | What it measures | How (Calibrate screen) | Stored as | Redo when |
+|---|---|---|---|---|
+| **Camera map** | The pixel → blade-millimetre conversion (a homography). The controller needs the ball's position in mm from the centre, not in pixels. | With the paddle at level, draw 5 marks on the blade: the centre and ±40 mm (or ±50) on two perpendicular lines. Put the ball on each mark. It is captured automatically once it has been still for about 1 s. The screen fits the map and shows the error at each mark (under 3 mm is good). Enter saves. | `camera.homography` | the camera moves on the wrist, the paddle shifts or rotates in the gripper, or a new paddle |
+| **Axes** | Which way the ball rolls when the solver tilts each blade axis. | `t` (needs ARMED): the wrist tilts 3° per axis and the screen measures where the ball rolls. Enter saves. | `camera.axes` | after a new camera map, or if the ball runs away instead of being corrected |
+
+The **level pose** (Pose screen, `L`) is not a camera calibration but just as important: the controller treats it as
+"flat". If the ball keeps settling off centre on the same side in every run, level is probably off by about 1°. Fix the
+pose and save it with `L`, or use a small `ki`.
 
 ## Tools
 
