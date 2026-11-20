@@ -4,6 +4,7 @@
 pub mod analysis;
 pub mod arm;
 pub mod balance;
+pub mod calib;
 pub mod bus;
 pub mod config;
 pub mod control;

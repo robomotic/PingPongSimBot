@@ -5,6 +5,9 @@
 use super::camview::{self, SimBall};
 use super::Ctx;
 use crate::analysis::median;
+use crate::calib::{AxesCmd, AxesEvent};
+use crate::control::AxesMap;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use crate::config::Config;
 use crate::estimator::Homography;
 use crate::vision::Camera;
@@ -20,11 +23,12 @@ use ratatui::Frame;
 use std::collections::VecDeque;
 use std::time::Instant;
 
-pub const HELP: [&str; 13] = [
+pub const HELP: [&str; 14] = [
     "← →        before starting: distance of the outer marks from the centre (40 or 50 mm)",
     "Space      start · during capture: capture now, without waiting for stillness",
     "r          redo the current mark      Backspace  go back one mark",
     "Enter / s  after all 5: save the map to paddle.toml (the axes calibration is cleared: redo it)",
+    "t          axis calibration (after the map; needs ARMED): tilts the wrist 3° per axis, measures the roll",
     "Esc        cancel, back to Home",
     "",
     "Mark the blade: the centre, and the chosen distance from it in 4 directions at right angles:",
@@ -42,6 +46,8 @@ enum Stage {
     Setup,
     Capture { i: usize, since: Instant },
     Done { h: Homography, errors: Vec<f64> },
+    /// Axis calibration running in a background task (it owns the arm and the camera).
+    Axes { tx: UnboundedSender<AxesCmd>, rx: UnboundedReceiver<AxesEvent>, waiting: Option<usize>, results: Vec<String>, map: Option<AxesMap> },
 }
 
 pub struct CalibrateScreen {
@@ -53,21 +59,26 @@ pub struct CalibrateScreen {
     window: VecDeque<(Instant, Option<Vector2<f64>>)>,
     still: f64,
     msg: Option<(bool, String)>,
+    confirm_axes: bool,
 }
 
 impl Default for CalibrateScreen {
     fn default() -> Self {
-        Self { cam: None, ball: None, stage: Stage::Setup, offset: 40.0, captured: vec![None; 5], window: VecDeque::new(), still: 0.0, msg: None }
+        Self { cam: None, ball: None, stage: Stage::Setup, offset: 40.0, captured: vec![None; 5], window: VecDeque::new(), still: 0.0, msg: None, confirm_axes: false }
     }
 }
 
 impl CalibrateScreen {
     pub fn enter(&mut self, ctx: &Ctx) {
-        if self.cam.is_some() {
+        if self.cam.is_some() || matches!(self.stage, Stage::Axes { .. }) {
             return;
         }
         self.stage = Stage::Setup;
         self.captured = vec![None; 5];
+        self.enter_camera(ctx);
+    }
+
+    fn enter_camera(&mut self, ctx: &Ctx) {
         match camview::open(ctx, false) {
             Ok((cam, ball)) => {
                 self.cam = Some(cam);
@@ -81,6 +92,92 @@ impl CalibrateScreen {
     pub fn leave(&mut self) {
         self.cam = None;
         self.ball = None;
+    }
+
+    fn start_axes(&mut self, ctx: &Ctx) {
+        let mut cfg = ctx.cfg.clone();
+        if ctx.sim {
+            let ex = Config::example();
+            if cfg.poses.level.is_none() {
+                cfg.poses = ex.poses.clone();
+            }
+            if cfg.camera.homography.is_none() {
+                cfg.camera.homography = ex.camera.homography;
+            }
+            // The simulator needs "true" axes to roll the ball; measuring them is the point of the exercise.
+            cfg.camera.axes = cfg.camera.axes.or(ex.camera.axes);
+        }
+        if cfg.camera.homography.is_none() {
+            self.msg = Some((false, "do the camera map first (Space)".into()));
+            return;
+        }
+        self.cam = None; // the calibration task needs the camera
+        self.ball = None;
+        let (tx, mut crx) = unbounded_channel();
+        let (etx, rx) = unbounded_channel();
+        let sim = ctx.sim;
+        tokio::spawn(async move {
+            let etx2 = etx.clone();
+            let mut emit = move |e: AxesEvent| {
+                let _ = etx2.send(e);
+            };
+            let res = async {
+                if sim {
+                    let mut p = crate::sim::SimPlant::new(&cfg, crate::sim::SimParams::default(), 11)?;
+                    crate::calib::run(&mut p, &cfg, 3.0, &mut crx, &mut emit).await
+                } else {
+                    #[cfg(target_os = "linux")]
+                    {
+                        emit(AxesEvent::Status("opening the bus and the camera...".into()));
+                        let mut p = crate::balance::RealPlant::open_with(&cfg, false, true).await?;
+                        crate::calib::run(&mut p, &cfg, 3.0, &mut crx, &mut emit).await
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        anyhow::bail!("needs Linux")
+                    }
+                }
+            }
+            .await;
+            if let Err(e) = res {
+                let _ = etx.send(AxesEvent::Failed(format!("{e:#}")));
+            }
+        });
+        self.stage = Stage::Axes { tx, rx, waiting: None, results: Vec::new(), map: None };
+        self.msg = None;
+    }
+
+    fn pump_axes(&mut self) {
+        let Stage::Axes { rx, waiting, results, map, .. } = &mut self.stage else { return };
+        while let Ok(e) = rx.try_recv() {
+            match e {
+                AxesEvent::Status(s) => self.msg = Some((true, s)),
+                AxesEvent::WaitBall(k) => {
+                    *waiting = Some(k);
+                    self.msg = Some((true, format!("axis {}: put the ball on the centre mark, let go, then press Space", ["u", "v"][k])));
+                }
+                AxesEvent::Axis { k, accel, ratio, dir_deg } => {
+                    *waiting = None;
+                    results.push(format!(
+                        "axis {}: rolls towards {:.0}°, {:.0} mm/s², {:.2} of the model",
+                        ["u", "v"][k],
+                        dir_deg,
+                        accel.norm(),
+                        ratio
+                    ));
+                }
+                AxesEvent::Retry(k, m) => {
+                    *waiting = Some(k);
+                    self.msg = Some((false, m));
+                }
+                AxesEvent::Done { map: m } => {
+                    *map = Some(m);
+                    let ang = m.axes_angle_deg();
+                    self.msg = Some((ang > 60.0 && ang < 120.0, format!("axes {ang:.0}° apart (expect ~90). Enter saves.")));
+                }
+                AxesEvent::Failed(e) => self.msg = Some((false, e)),
+            }
+        }
     }
 
     fn mark_mm(&self, i: usize) -> Vector2<f64> {
@@ -118,6 +215,10 @@ impl CalibrateScreen {
     }
 
     pub fn pump(&mut self) {
+        if matches!(self.stage, Stage::Axes { .. }) {
+            self.pump_axes();
+            return;
+        }
         let Stage::Capture { i, since } = self.stage else {
             if let Some(cam) = &mut self.cam {
                 let _ = cam.rx.borrow_and_update();
@@ -174,10 +275,58 @@ impl CalibrateScreen {
 
     /// Returns true to go back Home.
     pub fn key(&mut self, k: KeyEvent, ctx: &mut Ctx) -> bool {
+        if self.confirm_axes {
+            self.confirm_axes = false;
+            if k.code == KeyCode::Char('y') {
+                if ctx.armed() {
+                    self.start_axes(ctx);
+                } else {
+                    self.msg = Some((false, "press a to ARM first: this tilts the wrist".into()));
+                }
+            }
+            return false;
+        }
+        if let Stage::Axes { tx, waiting, map, .. } = &mut self.stage {
+            match k.code {
+                KeyCode::Char(' ') if waiting.is_some() => {
+                    let _ = tx.send(AxesCmd::Go);
+                    *waiting = None;
+                }
+                KeyCode::Enter | KeyCode::Char('s') if map.is_some() => {
+                    let m = map.unwrap();
+                    let res = Config::load(&ctx.cfg_path).and_then(|mut c| {
+                        c.camera.axes = Some(m.to_row_major());
+                        std::fs::write(&ctx.cfg_path, toml::to_string_pretty(&c)?)?;
+                        Ok(c)
+                    });
+                    match res {
+                        Ok(c) => {
+                            ctx.cfg.camera = c.camera;
+                            self.msg = Some((true, "saved the axes calibration".into()));
+                        }
+                        Err(e) => self.msg = Some((false, format!("save failed: {e:#}"))),
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    let _ = tx.send(AxesCmd::Stop);
+                    self.stage = Stage::Setup;
+                    self.enter_camera(ctx);
+                }
+                _ => {}
+            }
+            return false;
+        }
         match (&self.stage, k.code) {
             (_, KeyCode::Esc) | (_, KeyCode::Char('q')) => {
                 self.leave();
                 return true;
+            }
+            (Stage::Setup, KeyCode::Char('t')) => {
+                if ctx.armed() {
+                    self.confirm_axes = true;
+                } else {
+                    self.msg = Some((false, "press a to ARM first: axis calibration tilts the wrist".into()));
+                }
             }
             (Stage::Setup, KeyCode::Left) => self.offset = 40.0,
             (Stage::Setup, KeyCode::Right) => self.offset = 50.0,
@@ -225,8 +374,22 @@ impl CalibrateScreen {
     }
 
     pub fn keys(&self) -> Vec<(&'static str, &'static str)> {
-        let mut v = match self.stage {
-            Stage::Setup => vec![("←→", "40/50 mm"), ("Space", "start")],
+        if self.confirm_axes {
+            return vec![("y", "start axis calibration"), ("any key", "cancel")];
+        }
+        let mut v = match &self.stage {
+            Stage::Axes { waiting, map, .. } => {
+                let mut v = Vec::new();
+                if waiting.is_some() {
+                    v.push(("Space", "ball is on the centre"));
+                }
+                if map.is_some() {
+                    v.push(("Enter", "save axes"));
+                }
+                v.push(("Esc", "stop"));
+                return v;
+            }
+            Stage::Setup => vec![("←→", "40/50 mm"), ("Space", "camera map"), ("t", "axes (moves wrist)")],
             Stage::Capture { .. } => vec![("Space", "capture now"), ("r", "redo"), ("⌫", "back")],
             Stage::Done { .. } => vec![("Enter", "save"), ("r", "start over")],
         };
@@ -235,6 +398,32 @@ impl CalibrateScreen {
     }
 
     pub fn draw(&self, f: &mut Frame, area: Rect) {
+        if let Stage::Axes { waiting, results, map, .. } = &self.stage {
+            let mut lines = vec![
+                Line::from(Span::styled(" AXIS CALIBRATION: the wrist tilts 3° per axis and the camera measures where the ball rolls", Style::new().bold())),
+                Line::from(""),
+            ];
+            for r in results {
+                lines.push(Line::from(format!("   ✓ {r}")));
+            }
+            if let Some(k) = waiting {
+                lines.push(Line::from(Span::styled(
+                    format!("   ▸ axis {}: put the ball on the CENTRE mark, let go, press Space. Be ready to catch it.", ["u", "v"][*k]),
+                    Style::new().fg(Color::Yellow).bold(),
+                )));
+            }
+            if let Some(m) = map {
+                lines.push(Line::from(""));
+                lines.push(Line::from(format!("   angle between the axes {:.0}° (expect ~90)", m.axes_angle_deg())));
+                lines.push(Line::from(Span::styled("   Enter saves · Esc leaves without saving", Style::new().fg(Color::DarkGray))));
+            }
+            if let Some((good, m)) = &self.msg {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(format!("   {m}"), Style::new().fg(if *good { Color::Green } else { Color::Red }))));
+            }
+            f.render_widget(Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }).block(Block::bordered().title(" calibrate · axes ")), area);
+            return;
+        }
         let [img, side] = Layout::horizontal([Constraint::Min(40), Constraint::Length(50)]).areas(area);
         let block = Block::bordered().title(" camera ");
         let inner = block.inner(img);
@@ -288,7 +477,7 @@ impl CalibrateScreen {
         let (ratio, label) = match &self.stage {
             Stage::Capture { i, .. } => (self.still.clamp(0.0, 1.0), format!("hold still on {}", MARKS[*i].0)),
             Stage::Done { .. } => (1.0, "all captured".into()),
-            Stage::Setup => (0.0, "press Space to start".into()),
+            Stage::Setup | Stage::Axes { .. } => (0.0, "press Space to start".into()),
         };
         f.render_widget(Gauge::default().block(Block::bordered().title(" stillness ")).gauge_style(Style::new().fg(Color::Yellow)).ratio(ratio).label(label), bar);
         let mut info_lines = Vec::new();
@@ -301,7 +490,8 @@ impl CalibrateScreen {
             info_lines.push(Line::from(format!(" per mark: {}", errors.iter().map(|e| format!("{e:.1}")).collect::<Vec<_>>().join(" · "))));
             info_lines.push(Line::from(Span::styled(" Enter saves (clears the axes calibration)", Style::new().fg(Color::DarkGray))));
         } else if let Stage::Setup = self.stage {
-            info_lines.push(Line::from(" Paddle level? Marks drawn? Ball ready? Space."));
+            info_lines.push(Line::from(" Camera map: paddle level, marks drawn, ball ready → Space."));
+            info_lines.push(Line::from(Span::styled(" Axes (after the map): a to ARM, then t. The wrist tilts 3°.", Style::new().fg(Color::DarkGray))));
         }
         if let Some((good, m)) = &self.msg {
             info_lines.push(Line::from(Span::styled(format!(" {m}"), Style::new().fg(if *good { Color::Green } else { Color::Red }))));

@@ -310,10 +310,16 @@ impl RealPlant {
     /// Opens the bus (all joints hold), checks the start pose against `rest`, sets the wrist acceleration and
     /// starts the camera. Nothing moves.
     pub async fn open(cfg: &Config) -> Result<Self> {
+        Self::open_with(cfg, true, true).await
+    }
+
+    /// `check_rest`: refuse unless the arm is near the rest pose. `roi`: detect only on the blade (needs the camera map;
+    /// the axes may still be missing, e.g. during axis calibration).
+    pub async fn open_with(cfg: &Config, check_rest: bool, roi: bool) -> Result<Self> {
         use st3215::protocol::RamRegister;
-        let (h, _) = calibration(cfg)?;
+        let h = if roi { cfg.camera.homography.map(|h| Homography::from_row_major(&h)) } else { None };
         let (mut arm, start) = crate::arm::Arm::open(cfg).await?;
-        if let Some(rest) = cfg.poses.rest {
+        if let Some(rest) = cfg.poses.rest.filter(|_| check_rest) {
             for j in 0..7 {
                 let d = (start[j] as i32 - rest[j] as i32).abs();
                 if d > cfg.safety.start_tolerance_ticks as i32 {
@@ -327,7 +333,7 @@ impl RealPlant {
         }
         let acc: Vec<(u8, u8)> = WRIST.iter().map(|&j| (j as u8 + 1, cfg.bus.wrist_acc)).collect();
         arm.bus.sync_write_u8(RamRegister::Acc, &acc).await?;
-        let cam = crate::vision::capture::start(&cfg.camera, Some(h), None)?;
+        let cam = crate::vision::capture::start(&cfg.camera, h, None)?;
         Ok(Self { arm, cam, start })
     }
 }

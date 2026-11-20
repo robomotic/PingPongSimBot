@@ -62,7 +62,8 @@ The user dislikes typing numbers and commands, so everything is moving into one 
 read-only bus check), **Pose** (joints + gripper; replaces jog and grip; safety.pose_limit_ticks box around level), **Camera** (live
 preview, detector view, live HSV/exposure tuning), **Calibrate** (camera-map wizard with auto-capture). Screenshots in docs/screenshots (regenerate with tools/tui_drive.py `p:` steps; locally pyte lives in
 the pyenv env `~/.pyenv/versions/antifake/bin/python3`).
-Next: axis calibration + joint probe inside Calibrate (they move the wrist: need ARMED) → System ID in ElRobotSysId
+Axis calibration is in Calibrate too (`t`, ARMED; engine in src/calib.rs, runs on any Plant). Next: joint probe in
+Calibrate (optional) → System ID in ElRobotSysId
 (needs the table safety area first: ElRobotSysId issue #1). Nothing new has run on the real arm yet: first real session
 should walk through every screen with the user watching.
 - Camera: `vision::Camera` handle (real V4L2 thread or `start_sim_camera`), `Tuning` shared with the capture thread
