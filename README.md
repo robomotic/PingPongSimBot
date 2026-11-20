@@ -19,6 +19,10 @@ camera (V4L2 YUYV 640x480, ~29 fps) -> HSV threshold + largest blob (pure Rust, 
   -> per-joint slop compensation -> sync write of 3 goal positions on the follower bus (1 Mbps)
 ```
 
+
+**Download:** prebuilt Raspberry Pi 4/5 (aarch64) binaries are on the
+[Releases](https://github.com/robomotic/PingPongSimBot/releases) page (`paddle-balance-aarch64-linux` + `.sha256`). They need glibc ≥ 2.39 (Debian 13 / Raspberry Pi OS trixie, Ubuntu 24.04+)
+and no other libraries. Otherwise, build from source as below.
 ## Why it talks to the bus directly
 
 Going through the NormaCore station adds about 160 ms of delay and stalls of up to 580 ms

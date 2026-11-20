@@ -85,3 +85,9 @@ should walk through every screen with the user watching.
   (the real engine on SimPlant), and `first_real_run_matches_the_python_analysis`).
 - `analysis::lag_samples` correlates frame-to-frame changes (raw signals saturate on drift); it gives 5/5/4 frames on the real run.
 - `bus.rs` is duplicated in ElRobotSysId. Keep fixes in sync, or extract a shared crate if it grows.
+
+## Releases
+v0.1.0 (2026-11-20): aarch64 binary built on the Pi, stripped, `.sha256` attached, tag at the built commit.
+To repeat: on the Pi `bash ~/pp-build.sh` (pulls and builds both repos, log in ~/pp-build.log), then `strip` a copy, run
+`sha256sum`, scp it down, and `gh release create vX.Y.Z --target <full sha> --notes-file ... <binary> <binary>.sha256`.
+Check the minimum glibc with `objdump -T <bin> | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -1`.
