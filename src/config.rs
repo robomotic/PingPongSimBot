@@ -19,6 +19,23 @@ pub struct Config {
     pub camera: CameraConfig,
     pub control: ControlConfig,
     pub safety: Safety,
+    pub system: SystemConfig,
+}
+
+/// The Pi around the robot: the NormaCore station service and the wrist camera's USB identity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SystemConfig {
+    /// systemd unit of the NormaCore station (owns the bus and the camera while it runs).
+    pub station_service: String,
+    /// USB vendor ID of the wrist camera (U20CAM: 0c45), for re-attaching it to the kernel.
+    pub camera_usb_vendor: String,
+}
+
+impl Default for SystemConfig {
+    fn default() -> Self {
+        Self { station_service: "normacore-station".into(), camera_usb_vendor: "0c45".into() }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +152,7 @@ impl Default for Config {
             camera: CameraConfig::default(),
             control: ControlConfig::default(),
             safety: Safety::default(),
+            system: SystemConfig::default(),
         }
     }
 }

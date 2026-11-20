@@ -6,6 +6,7 @@
 
 mod balance;
 mod results;
+mod system;
 
 use crate::config::Config;
 use anyhow::Result;
@@ -68,6 +69,36 @@ impl Ctx {
     }
 }
 
+/// A y/n question shown on top of everything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Confirm {
+    StopStation,
+    StartStation,
+    /// Quitting after this app stopped the station: start it again?
+    QuitRestart,
+}
+
+impl Confirm {
+    fn text(self) -> &'static str {
+        match self {
+            Confirm::StopStation => "Stop the NormaCore station? Servos keep holding their pose; the camera is re-attached and the bus checked. (y/n)",
+            Confirm::StartStation => "Start the NormaCore station? It takes the bus and camera back; leader→follower mirroring may move the arm. (y/n)",
+            Confirm::QuitRestart => "This app stopped the station. Start it again before quitting? (y = start and quit, n = just quit, Esc = stay)",
+        }
+    }
+}
+
+#[derive(Default)]
+struct SysView {
+    station: Option<bool>,
+    camera_node: bool,
+    camera_usb: Option<PathBuf>,
+    bus: Option<Result<system::BusInfo, String>>,
+    busy: Option<&'static str>,
+    msg: Option<(bool, String)>,
+    known: bool,
+}
+
 struct App {
     ctx: Ctx,
     screen: Screen,
@@ -76,12 +107,25 @@ struct App {
     quit: bool,
     balance: balance::BalanceScreen,
     results: results::ResultsScreen,
+    sys: SysView,
+    sys_tx: tokio::sync::mpsc::UnboundedSender<system::SysMsg>,
+    sys_rx: tokio::sync::mpsc::UnboundedReceiver<system::SysMsg>,
+    sys_refreshed: Instant,
+    confirm: Option<Confirm>,
+    we_stopped_station: bool,
 }
 
 pub async fn run(cfg_path: &Path, log_dir: &Path, sim: bool) -> Result<()> {
     let cfg = Config::load(cfg_path)?;
     let ctx = Ctx { cfg_path: cfg_path.to_path_buf(), cfg, sim, log_dir: log_dir.to_path_buf(), armed_until: None };
+    let (sys_tx, sys_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App {
+        sys: SysView::default(),
+        sys_tx,
+        sys_rx,
+        sys_refreshed: Instant::now() - Duration::from_secs(60),
+        confirm: None,
+        we_stopped_station: false,
         balance: balance::BalanceScreen::new(&ctx),
         results: results::ResultsScreen::default(),
         ctx,
@@ -96,6 +140,7 @@ pub async fn run(cfg_path: &Path, log_dir: &Path, sim: bool) -> Result<()> {
         loop {
             tick.tick().await;
             app.balance.pump(&mut app.ctx);
+            app.pump_sys();
             while event::poll(Duration::ZERO)? {
                 if let Event::Key(k) = event::read()? {
                     if k.kind == KeyEventKind::Press {
@@ -127,6 +172,26 @@ impl App {
             self.help = false;
             return;
         }
+        if let Some(c) = self.confirm {
+            match (c, k.code) {
+                (Confirm::StopStation, KeyCode::Char('y')) => {
+                    self.we_stopped_station = true;
+                    self.sys_action(system::SysAction::StopStation, "stopping the station...");
+                }
+                (Confirm::StartStation, KeyCode::Char('y')) => {
+                    self.we_stopped_station = false;
+                    self.sys_action(system::SysAction::StartStation, "starting the station...");
+                }
+                (Confirm::QuitRestart, KeyCode::Char('y')) => {
+                    let _ = system::spawn(system::SysAction::StartStation, self.ctx.cfg.clone(), self.sys_tx.clone());
+                    self.quit = true;
+                }
+                (Confirm::QuitRestart, KeyCode::Char('n')) => self.quit = true,
+                _ => {}
+            }
+            self.confirm = None;
+            return;
+        }
         match k.code {
             KeyCode::Char('?') => {
                 self.help = true;
@@ -145,7 +210,16 @@ impl App {
                 KeyCode::Enter | KeyCode::Char(' ') => self.open(self.home_sel),
                 KeyCode::Char('1') => self.open(0),
                 KeyCode::Char('2') => self.open(1),
-                KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
+                KeyCode::Char('x') => self.ask_station(),
+                KeyCode::Char('c') => self.sys_action(system::SysAction::ReattachCamera, "re-attaching the camera..."),
+                KeyCode::Char('r') => self.sys_action(system::SysAction::CheckBus, "checking the bus..."),
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    if self.we_stopped_station && self.sys.station == Some(false) && !self.ctx.sim {
+                        self.confirm = Some(Confirm::QuitRestart);
+                    } else {
+                        self.quit = true;
+                    }
+                }
                 _ => {}
             },
             Screen::Balance => match self.balance.key(k, &mut self.ctx) {
@@ -164,6 +238,69 @@ impl App {
         }
     }
 
+    fn sys_blocked(&mut self) -> bool {
+        let why = if self.ctx.sim {
+            Some("simulation: station and camera controls are off")
+        } else if self.balance.running() {
+            Some("stop the balance run first")
+        } else if self.sys.busy.is_some() {
+            Some("busy, wait a moment")
+        } else {
+            None
+        };
+        if let Some(w) = why {
+            self.sys.msg = Some((false, w.into()));
+        }
+        why.is_some()
+    }
+
+    fn sys_action(&mut self, a: system::SysAction, label: &'static str) {
+        if self.sys_blocked() {
+            return;
+        }
+        if a == system::SysAction::CheckBus && self.sys.station == Some(true) {
+            self.sys.msg = Some((false, "the station holds the bus: stop it first (x)".into()));
+            return;
+        }
+        self.sys.busy = Some(label);
+        system::spawn(a, self.ctx.cfg.clone(), self.sys_tx.clone());
+    }
+
+    fn ask_station(&mut self) {
+        if self.sys_blocked() {
+            return;
+        }
+        self.confirm = match self.sys.station {
+            Some(true) => Some(Confirm::StopStation),
+            Some(false) => Some(Confirm::StartStation),
+            None => {
+                self.sys.msg = Some((false, format!("no systemd unit '{}' here", self.ctx.cfg.system.station_service)));
+                None
+            }
+        };
+    }
+
+    fn pump_sys(&mut self) {
+        if self.sys_refreshed.elapsed() > Duration::from_secs(3) && self.sys.busy.is_none() {
+            self.sys_refreshed = Instant::now();
+            system::spawn(system::SysAction::Refresh, self.ctx.cfg.clone(), self.sys_tx.clone());
+        }
+        while let Ok(m) = self.sys_rx.try_recv() {
+            match m {
+                system::SysMsg::Status { station, camera_node, camera_usb } => {
+                    self.sys.station = station;
+                    self.sys.camera_node = camera_node;
+                    self.sys.camera_usb = camera_usb;
+                    self.sys.known = true;
+                    self.sys.busy = None;
+                }
+                system::SysMsg::Bus(b) => self.sys.bus = Some(b),
+                system::SysMsg::Done(m) => self.sys.msg = Some((true, m)),
+                system::SysMsg::Failed(m) => self.sys.msg = Some((false, m)),
+            }
+        }
+    }
+
     fn open(&mut self, i: usize) {
         match i {
             0 => self.screen = Screen::Balance,
@@ -178,7 +315,14 @@ impl App {
     fn draw(&mut self, f: &mut Frame) {
         let [head, body, foot] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(f.area());
         let (title, keys): (&str, Vec<(&str, &str)>) = match self.screen {
-            Screen::Home => ("HOME", vec![("↑↓", "select"), ("Enter", "open"), ("?", "help"), ("q", "quit")]),
+            Screen::Home => (
+                "HOME",
+                if self.ctx.sim {
+                    vec![("↑↓", "select"), ("Enter", "open"), ("?", "help"), ("q", "quit")]
+                } else {
+                    vec![("↑↓", "select"), ("Enter", "open"), ("x", "station"), ("c", "camera"), ("r", "bus"), ("a", "arm"), ("?", "help"), ("q", "quit")]
+                },
+            ),
             Screen::Balance => ("BALANCE", self.balance.keys(&self.ctx)),
             Screen::Results => ("RESULTS", self.results.keys()),
         };
@@ -189,10 +333,16 @@ impl App {
             Screen::Results => self.results.draw(f, body),
         }
         footer(f, foot, &keys);
+        if let Some(c) = self.confirm {
+            confirm_popup(f, c.text());
+        }
         if self.help {
             let lines = match self.screen {
                 Screen::Home => vec![
                     "↑↓ / Enter   choose a screen (1 Balance, 2 Results)",
+                    "x            stop / start the NormaCore station (asks first). Stopping re-attaches the camera and checks the bus",
+                    "c            re-attach the camera to the kernel (after the station used it)",
+                    "r            check the bus: which servos answer, voltage, temperature, gripper load (read-only, nothing moves)",
                     "a            ARM / disarm: needed before anything moves the real arm (30 s timeout)",
                     "Ctrl-C       emergency stop from any screen: the arm returns to its start pose",
                     "q / Esc      quit",
@@ -206,31 +356,71 @@ impl App {
 
     fn draw_home(&self, f: &mut Frame, area: Rect) {
         let c = &self.ctx;
+        let ok = |b: bool| if b { Span::styled("✓", Style::new().fg(Color::Green).bold()) } else { Span::styled("✗", Style::new().fg(Color::Red).bold()) };
+        let dim = Style::new().fg(Color::DarkGray);
+        let sv = &self.sys;
         let mut lines = vec![
             Line::from(""),
             Line::from(vec![
                 Span::raw("  Mode      "),
                 if c.sim { Span::styled("SIMULATION: nothing moves", Style::new().fg(Color::Cyan).bold()) } else { Span::styled("REAL ARM", Style::new().fg(Color::Yellow).bold()) },
+                Span::styled(format!("    config {}", c.cfg_path.display()), dim),
             ]),
-            Line::from(format!("  Config    {}", c.cfg_path.display())),
-            Line::from(format!("  Bus       {}", c.cfg.bus.port)),
-            Line::from(format!(
-                "  Poses     level {}   rest {}   grip {}",
-                if c.cfg.poses.level.is_some() { "✓" } else { "✗" },
-                if c.cfg.poses.rest.is_some() { "✓" } else { "✗" },
-                c.cfg.poses.grip.map_or("✗".to_string(), |g| g.to_string())
-            )),
-            Line::from(format!(
-                "  Calib     camera {}   axes {}",
-                if c.cfg.camera.homography.is_some() { "✓" } else { "✗" },
-                if c.cfg.camera.axes.is_some() { "✓" } else { "✗" }
-            )),
         ];
-        if !c.sim {
-            lines.push(Line::from(Span::styled(
-                "  Before a real run: sudo systemctl stop normacore-station, and re-attach the camera (see README)",
-                Style::new().fg(Color::DarkGray),
-            )));
+        // Station
+        let station = match (sv.known, sv.station) {
+            (false, _) => Span::styled("checking...", dim),
+            (true, Some(true)) => Span::styled("● running: it owns the bus and the camera", Style::new().fg(Color::Yellow)),
+            (true, Some(false)) => Span::styled("○ stopped: this app can use the bus and the camera", Style::new().fg(Color::Green)),
+            (true, None) => Span::styled(format!("– no '{}' service on this machine", c.cfg.system.station_service), dim),
+        };
+        lines.push(Line::from(vec![Span::raw("  Station   "), station]));
+        // Camera
+        let cam = if !sv.known {
+            vec![Span::styled("checking...", dim)]
+        } else if sv.camera_node {
+            vec![ok(true), Span::raw(format!(" {}", c.cfg.camera.device))]
+        } else if sv.camera_usb.is_some() {
+            vec![ok(false), Span::raw(" on USB but detached from the kernel (station / libuvc) — press c")]
+        } else {
+            vec![ok(false), Span::styled(" not found", dim)]
+        };
+        lines.push(Line::from([vec![Span::raw("  Camera    ")], cam].concat()));
+        // Bus
+        let bus = match &sv.bus {
+            None => vec![Span::styled(format!("{}  (r to check, read-only)", c.cfg.bus.port), dim)],
+            Some(Ok(b)) => vec![
+                ok(b.answering.len() == 8),
+                Span::raw(format!(
+                    " {}/8 servos · {:.1} V · max {} °C · gripper {} load {}",
+                    b.answering.len(),
+                    b.voltage,
+                    b.max_temp_c,
+                    if b.m8_torque { "on," } else { "OFF," },
+                    b.m8_load
+                )),
+            ],
+            Some(Err(e)) => vec![ok(false), Span::raw(format!(" {e}"))],
+        };
+        lines.push(Line::from([vec![Span::raw("  Bus       ")], bus].concat()));
+        lines.push(Line::from(vec![
+            Span::raw("  Poses     "),
+            Span::raw("level "),
+            ok(c.cfg.poses.level.is_some()),
+            Span::raw("  rest "),
+            ok(c.cfg.poses.rest.is_some()),
+            Span::raw(format!("  grip {}", c.cfg.poses.grip.map_or("–".to_string(), |g| g.to_string()))),
+            Span::raw("    calibration: camera "),
+            ok(c.cfg.camera.homography.is_some()),
+            Span::raw("  axes "),
+            ok(c.cfg.camera.axes.is_some()),
+        ]));
+        if let Some(b) = sv.busy {
+            lines.push(Line::from(Span::styled(format!("  ⏳ {b}"), Style::new().fg(Color::Cyan))));
+        } else if let Some((good, m)) = &sv.msg {
+            lines.push(Line::from(Span::styled(format!("  {m}"), Style::new().fg(if *good { Color::Green } else { Color::Red }))));
+        } else {
+            lines.push(Line::from(""));
         }
         lines.push(Line::from(""));
         for (i, (name, desc, ok)) in HOME_ITEMS.iter().enumerate() {
@@ -249,6 +439,19 @@ impl App {
         }
         f.render_widget(Paragraph::new(lines).block(Block::bordered().title(" paddle-balance ")), area);
     }
+}
+
+fn confirm_popup(f: &mut Frame, text: &str) {
+    let w = (text.chars().count() as u16 + 6).min(f.area().width.saturating_sub(4)).max(30);
+    let [area] = Layout::horizontal([Constraint::Length(w)]).flex(Flex::Center).areas(f.area());
+    let [area] = Layout::vertical([Constraint::Length(5)]).flex(Flex::Center).areas(area);
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(vec![Line::from(""), Line::from(format!(" {text}"))])
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(" confirm ").border_style(Style::new().fg(Color::Yellow))),
+        area,
+    );
 }
 
 fn header(f: &mut Frame, area: Rect, title: &str, c: &Ctx, running: bool) {
