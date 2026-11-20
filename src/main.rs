@@ -14,7 +14,7 @@
 //!   paddle-balance                        # full-screen app (Balance + Results); `tui --sim` without the robot
 //!   sudo systemctl start normacore-station
 
-use paddle_balance::{analysis, arm, balance, bus, config, control, estimator, kinematics, sim, vision};
+use paddle_balance::{analysis, arm, balance, bus, calib, config, control, estimator, kinematics, sim, vision};
 
 #[cfg(target_os = "linux")]
 mod app;
