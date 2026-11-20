@@ -1,0 +1,36 @@
+[package]
+name = "paddle-balance"
+version = "0.1.0"
+edition = "2021"
+description = "Balance a ping-pong ball on a paddle held by the ElRobot follower: wrist camera + PID on M5-M7, direct ST3215 bus access"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "paddle_balance"
+path = "src/lib.rs"
+
+[[bin]]
+name = "paddle-balance"
+path = "src/main.rs"
+
+[dependencies]
+# ST3215 packet codec and register map, from NormaCore (pinned; needs `protoc` at build time).
+st3215 = { git = "https://github.com/norma-core/norma-core", rev = "6b494f77fac366a878ae71222458b196f8400dee" }
+tokio = { version = "1.49", features = ["full"] }
+tokio-serial = "5.4.5"
+bytes = "1.11"
+log = "0.4.28"
+env_logger = "0.11"
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+nalgebra = "0.33"
+crossterm = "0.28"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+v4l = "0.14"
+
+[profile.release]
+debug = 1

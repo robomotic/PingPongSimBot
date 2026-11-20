@@ -1,0 +1,118 @@
+[bus]
+port = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B14033257-if00"
+timeout_ms = 20
+wrist_acc = 100
+
+[poses]
+rest = [
+    2003,
+    1002,
+    1942,
+    3185,
+    1864,
+    1892,
+    2226,
+    1436,
+]
+level = [
+    2003,
+    1002,
+    1942,
+    3185,
+    1864,
+    1892,
+    2226,
+    1436,
+]
+grip = 1396
+move_time_s = 3.0
+
+[joints]
+sign = [
+    -1.0,
+    -1.0,
+    -1.0,
+    -1.0,
+    -1.0,
+    -1.0,
+    -1.0,
+]
+zero = [
+    2048.0,
+    2048.0,
+    2048.0,
+    2048.0,
+    2048.0,
+    2048.0,
+    2048.0,
+]
+wrist_weight = [
+    3.0,
+    1.5,
+    1.0,
+]
+wrist_range_ticks = [
+    250,
+    250,
+    250,
+]
+
+[camera]
+device = "/dev/video0"
+width = 640
+height = 480
+fps = 30
+exposure = 40
+hsv_low = [
+    5,
+    100,
+    40,
+]
+hsv_high = [
+    25,
+    255,
+    255,
+]
+min_area = 60
+homography = [
+    56.73046500492218,
+    4.497717731784849,
+    -17648.89402704684,
+    4.8508506928860395,
+    -267.8666362480486,
+    38376.27915443552,
+    -0.024699299225436223,
+    1.1986108348700477,
+    1.0,
+]
+roi_radius_mm = 80.0
+axes = [
+    -0.35822126057219067,
+    -0.09600757419781286,
+    0.047905769738722105,
+    1.0102267910954683,
+]
+axes_normalize = true
+
+[control]
+kp = 0.0017
+kd = 0.002
+ki = 0.0
+i_limit_rad = 0.03
+max_tilt_deg = 10.0
+max_tilt_rate_deg_s = 60.0
+deadband_mm = 4.0
+deadband_speed_mm_s = 10.0
+alpha = 0.6
+beta = 0.2
+predict_ms = 60.0
+min_goal_step_ticks = 2
+null_space_gain = 0.05
+damping = 0.02
+
+[safety]
+start_tolerance_ticks = 150
+ball_lost_s = 0.5
+edge_radius_mm = 65.0
+no_frame_s = 0.2
+ball_confirm_frames = 10
