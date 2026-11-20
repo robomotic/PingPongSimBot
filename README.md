@@ -105,3 +105,7 @@ src/control.rs     ball PID, axes map, slop compensation, acceleration fit, min-
 src/app.rs         subcommands and the run state machine
 src/grip_tui.rs    gripper adjuster (crossterm)
 ```
+
+## License
+
+Apache License 2.0, see [LICENSE](LICENSE).

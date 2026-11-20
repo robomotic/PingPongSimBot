@@ -3,7 +3,7 @@ name = "paddle-balance"
 version = "0.1.0"
 edition = "2021"
 description = "Balance a ping-pong ball on a paddle held by the ElRobot follower: wrist camera + PID on M5-M7, direct ST3215 bus access"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 publish = false
 
 [lib]
