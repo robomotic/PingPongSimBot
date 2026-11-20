@@ -62,14 +62,17 @@ camera noise.
 | **Balance** | Space starts (rest → level → wait for the ball → balance). It shows the blade from above with the ball, its trail and the tilt arrow; a **live tuning** panel (↑↓ choose, ←→ change, applied at once); live statistics (offset, wobble Hz/mm, servo lag, current, latency, deadband); the distance-from-centre sparkline; and a status log. `0`/`1`/`2` load the first-run / test A / test B gains, `s` saves the tuning, Esc stops and returns to the start pose. |
 | **Home** | Station (`x` stop/start, asks first), camera (`c` re-attach after the station), bus (`r` read-only check: servos, voltage, temperature, gripper load), config status. Quitting offers to restart a station the app stopped. |
 | **Results** | Every run in `paddle_logs/` and `data/` with its statistics (same as `tools/analyze_run.py`). `c` marks a reference run for a side-by-side comparison with a green/red Δ. |
-| Pose, Gripper, Camera, Calibrate, System ID | coming next (the line commands below still work) |
+| **Pose** | All 8 servos live (goal, present, miss, distance from level, load, temperature). ↑↓ joint, ←→ move by 1/5/20 ticks, `l`/`r` go to level/rest (asks first), `L`/`R` save level/rest, `G` save the grip. Each joint stays within `safety.pose_limit_ticks` of level, so manual moves stay above the table. The gripper (M8) is in the same table, with automatic back-off above `safety.grip_backoff_load`. Replaces `jog` and `grip`. |
+| Camera, Calibrate, System ID | coming next (the line commands below still work) |
 
 ![Balance screen: ball on the blade, live tuning, statistics](docs/screenshots/balance.png)
 
 <details>
-<summary>More screens: Home, help overlay, Results comparison</summary>
+<summary>More screens: Home, Pose, help overlay, Results comparison</summary>
 
 ![Home: station, camera and bus status](docs/screenshots/home.png)
+
+![Pose: joints and gripper, with safe ranges around level](docs/screenshots/pose.png)
 
 ![Help overlay on the Balance screen](docs/screenshots/balance-help.png)
 

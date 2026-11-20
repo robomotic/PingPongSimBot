@@ -59,10 +59,12 @@ Sibling repo: robomotic/ElRobotSysId (servo system ID for the MuJoCo model).
 ## Full-screen app (in progress, 2026-11-20)
 The user dislikes typing numbers and commands, so everything is moving into one ratatui app with the same keys on every screen
 (see README "Full-screen app"). Done: **Balance** (live tuning, live stats), **Results** (compare runs), **Home** (station stop/start, camera re-attach,
-read-only bus check). Screenshots in docs/screenshots (regenerate with tools/tui_drive.py `p:` steps; locally pyte lives in
+read-only bus check), **Pose** (joints + gripper; replaces jog and grip; safety.pose_limit_ticks box around level). Screenshots in docs/screenshots (regenerate with tools/tui_drive.py `p:` steps; locally pyte lives in
 the pyenv env `~/.pyenv/versions/antifake/bin/python3`).
 Next, one at a time: Pose (replaces `jog`) → Calibration wizard (auto-capture
 when the ball is still) → Camera (half-block live preview, HSV tuning) → Gripper (move grip_tui in) → System ID in ElRobotSysId.
+- Pose uses `tui/device.rs`: a background task that owns the arm (real `Arm` or `SimArm`) and streams all 8 servo states at
+  10 Hz. Leaving the screen drops it and releases the bus. Pose and Balance never own the bus at the same time.
 - Engine: `balance::Balancer` is pure (frame in → action + telemetry out). `balance::run_loop` drives any `Plant`
   (`RealPlant`, `sim::SimPlant`) and reports `Event`s; the CLI `run` and the TUI share it.
 - Test every screen in simulation: `paddle-balance tui --sim`, driven headless with `tools/tui_drive.py` (pyte). The user

@@ -141,6 +141,11 @@ pub struct Safety {
     pub no_frame_s: f64,
     /// Frames in a row with a ball before balancing starts.
     pub ball_confirm_frames: u32,
+    /// Pose screen: how far each of M1..M7 may be moved from the level pose (ticks). Keeps manual moves near the
+    /// known-safe working area above the table; widen deliberately if needed.
+    pub pose_limit_ticks: [u16; 7],
+    /// Gripper (M8) load at which the Pose screen backs the jaws off by itself (0..1000).
+    pub grip_backoff_load: i16,
 }
 
 impl Default for Config {
@@ -241,6 +246,8 @@ impl Default for Safety {
             edge_radius_mm: 65.0,
             no_frame_s: 0.2,
             ball_confirm_frames: 10,
+            pose_limit_ticks: [150, 150, 150, 200, 400, 300, 400],
+            grip_backoff_load: 600,
         }
     }
 }
