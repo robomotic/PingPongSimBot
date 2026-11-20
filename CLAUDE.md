@@ -37,8 +37,10 @@ Sibling repo: robomotic/ElRobotSysId (servo system ID for the MuJoCo model).
   software latency 2.9 ms; **servo lag 4–5 frames (~150 ms)**; M6 tracking error about 20 ticks.
 
 ## Current state and next steps
-1. **Pending robot test A:** `kd = 0.002` (set on the Pi; the sim predicts 22 → 9 mm).
-   **Test B:** `control.backlash_ticks = [4, 16, 6]` (sim: about 4.5 mm). Compare with `tools/analyze_run.py`.
+1. **Pending robot tests**, tracked as GitHub issues with the exact steps: **#1 test A** (`kd = 0.002`, already set on the Pi;
+   sim: 22 → 9 mm) and **#2 test B** (`control.backlash_ticks = [4, 16, 6]`; sim: about 4.5 mm). The binary on the Pi
+   (`~/paddle-ws`, built 2026-11-19 20:43) supports both; don't rebuild on the Pi unless the user asks. Compare with
+   `tools/analyze_run.py`.
 2. If near/far still wobbles more: separate PD gains per blade axis (not per servo).
 3. The MuJoCo model (RoboSim #69 Phase 1) needs the servo parameters from ElRobotSysId.
 4. Paddle weight is still unknown (also open in #73).
