@@ -7,10 +7,10 @@ wrist_acc = 100
 rest = [
     2003,
     1002,
-    1942,
+    2092,
     3185,
     1864,
-    1892,
+    2182,
     2226,
     1436,
 ]
@@ -107,6 +107,11 @@ alpha = 0.6
 beta = 0.2
 predict_ms = 60.0
 min_goal_step_ticks = 2
+backlash_ticks = [
+    4.0,
+    16.0,
+    6.0,
+]
 null_space_gain = 0.05
 damping = 0.02
 
@@ -116,3 +121,17 @@ ball_lost_s = 0.5
 edge_radius_mm = 65.0
 no_frame_s = 0.2
 ball_confirm_frames = 10
+pose_limit_ticks = [
+    150,
+    150,
+    150,
+    200,
+    400,
+    300,
+    400,
+]
+grip_backoff_load = 600
+
+[system]
+station_service = "normacore-station"
+camera_usb_vendor = "0c45"
