@@ -56,8 +56,22 @@ Sibling repo: robomotic/ElRobotSysId (servo system ID for the MuJoCo model).
   `nohup … &` and an exit marker, because SSH drops with the Wi-Fi. Don't use `pgrep -f` over SSH: it matches its own command
   line.
 
+## Full-screen app (in progress, 2026-11-20)
+The user dislikes typing numbers and commands, so everything is moving into one ratatui app with the same keys on every screen
+(see README "Full-screen app"). Done: **Balance** (live tuning, live stats) and **Results** (compare runs).
+Next, one at a time: Home with station stop/start and camera re-attach → Pose (replaces `jog`) → Calibration wizard (auto-capture
+when the ball is still) → Camera (half-block live preview, HSV tuning) → Gripper (move grip_tui in) → System ID in ElRobotSysId.
+- Engine: `balance::Balancer` is pure (frame in → action + telemetry out). `balance::run_loop` drives any `Plant`
+  (`RealPlant`, `sim::SimPlant`) and reports `Event`s; the CLI `run` and the TUI share it.
+- Test every screen in simulation: `paddle-balance tui --sim`, driven headless with `tools/tui_drive.py` (pyte). The user
+  said not to rebuild on the Pi unless asked: develop and test locally in sim.
+- Known gap: the simulator matches the real offset size but wobbles slower (0.27 Hz vs 0.95 Hz real). Refit it once the
+  ElRobotSysId servo data exists.
+
 ## Code notes
 - `src/main.rs` re-exports the library modules (`use paddle_balance::{bus, …}`) so that `crate::bus` paths in `app.rs` work.
 - `vision::capture` and `app` are Linux-only (`cfg(target_os = "linux")`); other platforms build a stub binary.
-- Tests: `cargo test` (21 tests, including `default_gains_balance_a_delayed_ball`, a closed-loop sim with delay).
+- Tests: `cargo test` (25 tests, including `default_gains_balance_a_delayed_ball`, `controller_balances_the_simulated_ball`
+  (the real engine on SimPlant), and `first_real_run_matches_the_python_analysis`).
+- `analysis::lag_samples` correlates frame-to-frame changes (raw signals saturate on drift); it gives 5/5/4 frames on the real run.
 - `bus.rs` is duplicated in ElRobotSysId. Keep fixes in sync, or extract a shared crate if it grows.

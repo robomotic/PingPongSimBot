@@ -51,6 +51,24 @@ cargo test                       # 21 unit tests incl. a delayed closed-loop sim
 
 `st3215` (the ST3215 packet codec) comes from [norma-core](https://github.com/norma-core/norma-core) as a pinned git dependency.
 
+## Full-screen app
+
+`paddle-balance` with no arguments opens a keyboard-driven app; `paddle-balance tui --sim` runs it on a **simulated arm and
+ball**, so nothing moves and no hardware is needed. The simulator is fitted to the real arm's measured servo lag, dead zones and
+camera noise.
+
+| Screen | What it does |
+|---|---|
+| **Balance** | Space starts (rest → level → wait for the ball → balance). It shows the blade from above with the ball, its trail and the tilt arrow; a **live tuning** panel (↑↓ choose, ←→ change, applied at once); live statistics (offset, wobble Hz/mm, servo lag, current, latency, deadband); the distance-from-centre sparkline; and a status log. `0`/`1`/`2` load the first-run / test A / test B gains, `s` saves the tuning, Esc stops and returns to the start pose. |
+| **Results** | Every run in `paddle_logs/` and `data/` with its statistics (same as `tools/analyze_run.py`). `c` marks a reference run for a side-by-side comparison with a green/red Δ. |
+| Pose, Gripper, Camera, Calibrate, System ID | coming next (the line commands below still work) |
+
+Same keys everywhere: ↑↓ select · ←→ adjust · +/- step size · Space main action · Enter confirm · s save · ? help ·
+Esc back / q quit · **Ctrl-C emergency stop** (the arm returns to its start pose). Anything that moves the real arm needs the
+**ARMED** state (`a`), which switches itself off after 30 s without a key.
+
+Every run log now records the active gains (kp, kd, slop, deadband) on each row, so live tuning shows up in Results.
+
 ## Session on the robot
 
 ```bash
@@ -78,6 +96,7 @@ All settings and calibrations live in `paddle.toml`. Each run writes `paddle_log
 
 | | |
 |---|---|
+| `tools/tui_drive.py` | run the full-screen app headless in a pseudo-terminal, send keys, print the screen (testing; needs `pyte`) |
 | `tools/analyze_run.py <csv>` | balance segments, ball offset, limit-cycle frequency and amplitude, servo lag, latency, deadband use |
 | `tools/tune_sim.py` | 2-axis sim fitted to the real run (delay, servo lag, slop, noise); grid-searches gains |
 | `tools/station_read_positions.py` | read all servo positions through a running station (read-only), e.g. after teleop |
@@ -102,8 +121,13 @@ src/vision.rs      YUYV -> HSV -> blob detector, V4L2 capture thread, PPM snapsh
 src/estimator.rs   homography (DLT), alpha-beta filter
 src/kinematics.rs  orientation FK from the URDF axes, weighted damped pseudo-inverse with null space
 src/control.rs     ball PID, axes map, slop compensation, acceleration fit, min-jerk
-src/app.rs         subcommands and the run state machine
-src/grip_tui.rs    gripper adjuster (crossterm)
+src/arm.rs         the arm: bus + last goals, min-jerk moves
+src/balance.rs     balancing engine: Balancer (frame -> action), Plant trait (RealPlant), run_loop, CSV run log
+src/sim.rs         SimPlant: simulated servos (delay, lag, dead zone) + ball + camera, fitted to the real run
+src/analysis.rs    run statistics (Rust port of analyze_run.py) and live-stat helpers
+src/app.rs         line-based subcommands (scan, jog, calib-*, probe-joints, run)
+src/tui/           full-screen app (ratatui): mod.rs (shell, keys, help), balance.rs, results.rs
+src/grip_tui.rs    gripper adjuster (crossterm; moves into the app next)
 ```
 
 ## License

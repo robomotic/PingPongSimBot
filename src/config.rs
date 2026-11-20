@@ -237,6 +237,12 @@ impl Config {
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
+    /// The calibrated config of the real NormaStation arm (config/paddle.example.toml), built in. Used by the
+    /// simulator when the local config lacks a level pose or calibrations.
+    pub fn example() -> Self {
+        toml::from_str(include_str!("../config/paddle.example.toml")).expect("built-in example config parses")
+    }
+
     pub fn save(&self, path: &Path) -> Result<()> {
         let text = toml::to_string_pretty(self)?;
         std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;

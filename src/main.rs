@@ -11,14 +11,17 @@
 //!   paddle-balance calib-camera           # pixel -> blade mm
 //!   paddle-balance calib-axes             # which way the ball rolls for each wrist tilt
 //!   paddle-balance run                    # rest -> level -> wait for ball -> balance; Ctrl-C -> rest
+//!   paddle-balance                        # full-screen app (Balance + Results); `tui --sim` without the robot
 //!   sudo systemctl start normacore-station
 
-use paddle_balance::{bus, config, control, estimator, kinematics, vision};
+use paddle_balance::{analysis, arm, balance, bus, config, control, estimator, kinematics, sim, vision};
 
 #[cfg(target_os = "linux")]
 mod app;
 #[cfg(target_os = "linux")]
 mod grip_tui;
+#[cfg(target_os = "linux")]
+mod tui;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -29,12 +32,21 @@ struct Cli {
     /// Config file (created/updated by the calibration commands).
     #[arg(short, long, default_value = "paddle.toml", global = true)]
     config: PathBuf,
+    /// No command: open the full-screen app.
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Full-screen app (the default when no command is given).
+    Tui {
+        /// Simulated arm and ball: nothing moves, no hardware needed.
+        #[arg(long)]
+        sim: bool,
+        #[arg(long, default_value = "paddle_logs")]
+        log_dir: PathBuf,
+    },
     /// Ping M1-M8 and print their state (no motion).
     Scan {
         /// Store the present pose as the rest pose.
@@ -81,9 +93,14 @@ enum Cmd {
 #[cfg(target_os = "linux")]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
-    match cli.cmd {
+    let cmd = cli.cmd.unwrap_or(Cmd::Tui { sim: false, log_dir: PathBuf::from("paddle_logs") });
+    // Log lines would tear the full-screen app; keep the logger for the line-based commands only.
+    if !matches!(cmd, Cmd::Tui { .. }) {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    }
+    match cmd {
+        Cmd::Tui { sim, log_dir } => tui::run(&cli.config, &log_dir, sim).await,
         Cmd::Scan { save_rest } => app::scan(&cli.config, save_rest).await,
         Cmd::Jog => app::jog(&cli.config).await,
         Cmd::Grip => app::grip(&cli.config).await,

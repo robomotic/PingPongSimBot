@@ -67,6 +67,11 @@ impl BallPid {
         self.out = Vector2::zeros();
     }
 
+    /// New gains/limits; the integral and the last output are kept (live tuning).
+    pub fn set_cfg(&mut self, cfg: ControlConfig) {
+        self.cfg = cfg;
+    }
+
     /// Returns the wanted blade tilt (rad, blade frame; positive = ball accelerates along +axis).
     /// `pos` in mm from the blade centre, `vel` in mm/s.
     pub fn step(&mut self, pos: Vector2<f64>, vel: Vector2<f64>, dt: f64) -> Vector2<f64> {

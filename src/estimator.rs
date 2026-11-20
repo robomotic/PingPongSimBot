@@ -16,6 +16,11 @@ impl Homography {
         [m[(0, 0)], m[(0, 1)], m[(0, 2)], m[(1, 0)], m[(1, 1)], m[(1, 2)], m[(2, 0)], m[(2, 1)], m[(2, 2)]]
     }
 
+    /// Blade mm -> pixel.
+    pub fn inverse(&self) -> Option<Self> {
+        self.0.try_inverse().map(Self)
+    }
+
     pub fn apply(&self, p: Vector2<f64>) -> Vector2<f64> {
         let r = self.0 * Vector3::new(p.x, p.y, 1.0);
         Vector2::new(r.x / r.z, r.y / r.z)
@@ -79,6 +84,11 @@ impl AlphaBeta {
     pub fn reset(&mut self) {
         self.initialised = false;
         self.vel = Vector2::zeros();
+    }
+
+    pub fn set_gains(&mut self, alpha: f64, beta: f64) {
+        self.alpha = alpha;
+        self.beta = beta;
     }
 
     /// `accel` is the model acceleration (from the commanded tilt), used in the prediction step.
