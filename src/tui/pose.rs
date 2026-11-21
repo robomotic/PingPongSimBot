@@ -12,15 +12,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
 use ratatui::Frame;
 
-pub const HELP: [&str; 20] = [
+pub const HELP: [&str; 19] = [
     "↑ ↓        choose a joint (M1 base … M7 wrist roll, M8 gripper)",
     "← →        move it by one step (real arm: needs ARMED)",
     "+ / -      bigger / smaller step: 1 · 5 · 20 ticks (gripper: 1 · 5 · 20 · 50)",
     "l / r      go to the level / rest pose (smooth 3 s move, asks first)",
     "L / R      save the current pose as level / rest",
     "G          save the gripper goal as the grip (re-applied by every run)",
-    "o / c      OPEN the gripper (releases the paddle: hold it) / CLOSE it to the saved grip (asks first)",
-    "           o opens by safety.grip_open_ticks (default 400) from where the jaws are",
     "t          THROW PREVIEW without the ball, from level: 1 = 10 % · 2 = 25 % · 3 = 50 % · 4 = 100 % speed;",
     "           the arm flips to the throw end pose, holds, and returns to level (asks first)",
     "T          save the current pose as the throw end pose (blade upright, face toward the camera side)",
@@ -28,7 +26,8 @@ pub const HELP: [&str; 20] = [
     "",
     "4096 ticks = one turn (1 tick ≈ 0.09°). Joints stay within ±limit of the level pose",
     "(safety.pose_limit_ticks in paddle.toml) so manual moves stay above the table.",
-    "Gripper: ← closes on the real arm. Once the jaws touch the handle, extra steps show up as",
+    "Gripper: ← closes, → opens (+/- steps 1 · 5 · 20 · 50; open far enough and the paddle drops)",
+    "Once the jaws touch the handle, extra steps show up as",
     "goal − present and load, not motion. Keep load under ~300; above 600 it backs off by itself.",
     "",
     "Watch the arm while moving it. Ctrl-C stops everything.",
@@ -200,23 +199,6 @@ impl PoseScreen {
         }
     }
 
-    /// Open the jaws by `grip_open_ticks`, or close them to the saved grip.
-    fn gripper(&mut self, ctx: &Ctx, which: char) {
-        let (Some(g), Some(dev)) = (self.goals.as_mut(), &self.dev) else { return };
-        let target = if which == 'o' {
-            let from = self.states.map_or(g[7], |s| s[7].position);
-            (from as i32 + ctx.cfg.safety.grip_open_ticks as i32).clamp(0, 4095) as u16
-        } else {
-            match ctx.cfg.poses.grip {
-                Some(t) => t,
-                None => return,
-            }
-        };
-        g[7] = target;
-        let _ = dev.tx.send(DevCmd::Grip(target));
-        self.msg = Some((true, if which == 'o' { format!("opening the gripper to {target}") } else { format!("closing the gripper to the saved grip {target}") }));
-    }
-
     fn go(&mut self, ctx: &Ctx, which: char) {
         let pose = if which == 'l' { ctx.cfg.poses.level } else { ctx.cfg.poses.rest };
         let (Some(pose), Some(g), Some(dev)) = (pose, self.goals.as_mut(), &self.dev) else {
@@ -245,14 +227,6 @@ impl PoseScreen {
                     Some(sp) if ctx.armed() => self.throw_preview(ctx, sp),
                     Some(_) => self.msg = Some((false, "press a to ARM first".into())),
                     None => self.msg = Some((true, "throw preview cancelled".into())),
-                }
-                return false;
-            }
-            if k.code == KeyCode::Char('y') && (p == 'o' || p == 'c') {
-                if ctx.armed() {
-                    self.gripper(ctx, p);
-                } else {
-                    self.msg = Some((false, "press a to ARM first".into()));
                 }
                 return false;
             }
@@ -292,16 +266,7 @@ impl PoseScreen {
             }
             KeyCode::Char(c @ ('L' | 'R' | 'G')) => self.save_pose(ctx, c),
             KeyCode::Char('T') => self.save_throw_end(ctx),
-            KeyCode::Char(c @ ('o' | 'c')) => {
-                if !ctx.armed() {
-                    self.msg = Some((false, "press a to ARM first".into()));
-                } else if c == 'c' && ctx.cfg.poses.grip.is_none() {
-                    self.msg = Some((false, "no grip saved: close with ← on M8, then G".into()));
-                } else {
-                    self.sel = 7;
-                    self.pending = Some(c);
-                }
-            }
+
             KeyCode::Char('t') => {
                 if !ctx.armed() {
                     self.msg = Some((false, "press a to ARM first".into()));
@@ -360,7 +325,7 @@ impl PoseScreen {
         if self.pending.is_some() {
             return vec![("y", "go"), ("any key", "cancel")];
         }
-        let mut v = vec![("↑↓", "joint"), ("←→", "move"), ("+/-", "step"), ("l/r", "go level/rest"), ("L/R", "save level/rest"), ("G", "save grip"), ("o/c", "open/close grip"), ("t", "throw preview"), ("T", "save throw end")];
+        let mut v = vec![("↑↓", "joint"), ("←→", "move"), ("+/-", "step"), ("l/r", "go level/rest"), ("L/R", "save level/rest"), ("G", "save grip"), ("t", "throw preview"), ("T", "save throw end")];
         if !ctx.sim {
             v.insert(0, ("a", "arm"));
         }
@@ -453,16 +418,6 @@ impl PoseScreen {
                 " THROW PREVIEW, NO BALL: flip to the throw end pose and back to level. Speed? 1 = 10 % · 2 = 25 % · 3 = 50 % · 4 = 100 %, any other key = cancel",
                 Style::new().fg(Color::Yellow).bold(),
             )));
-        } else if self.pending == Some('o') {
-            lines.push(Line::from(Span::styled(
-                format!(" OPEN the gripper by {} ticks? THE PADDLE WILL DROP: hold it first. y = open, any other key = cancel", ctx.cfg.safety.grip_open_ticks),
-                Style::new().fg(Color::Yellow).bold(),
-            )));
-        } else if self.pending == Some('c') {
-            lines.push(Line::from(Span::styled(
-                format!(" CLOSE the gripper to the saved grip ({})? Keep your fingers clear of the jaws. y = close, any other key = cancel", ctx.cfg.poses.grip.unwrap_or(0)),
-                Style::new().fg(Color::Yellow).bold(),
-            )));
         } else if let Some(p) = self.pending {
             lines.push(Line::from(Span::styled(
                 format!(" Move every joint to the {} pose (smooth {:.0} s)? y = go, any other key = cancel", if p == 'l' { "LEVEL" } else { "REST" }, ctx.cfg.poses.move_time_s),
@@ -473,7 +428,7 @@ impl PoseScreen {
         }
         if self.sel == 7 {
             lines.push(Line::from(Span::styled(
-                " Gripper: ← closes on the real arm. Tighten until the paddle no longer wiggles; keep load under ~300.",
+                " Gripper: ← closes, → opens (+ for bigger steps). Tighten until the paddle no longer wiggles; keep load under ~300.",
                 dim,
             )));
         }
