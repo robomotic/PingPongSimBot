@@ -95,6 +95,20 @@ moving joints to `throw.torque_limit` (1000) and restores it. P 16 probably also
 M6's tracking error while balancing; changing it means an EEPROM write (persistent, affects the station): ask first.
 Read-only register dump: a READ-packet script with `~/lrenv/bin/python` (pyserial), app and station stopped.
 
+## State at the end of 2026-11-21 (next session starts here)
+- **Recalibrate first**: the grip went 1396 → 1360 (M8 overload, 55 °C) → 1432 today, so the paddle has probably moved in
+  the jaws. Redo the camera map (Calibrate; Space captures by hand) and then the axes (`t`). The user re-taught level
+  (now M3 2057, M4 3174, M6 1847) and re-taught the throw end for it (M3 −300, M4 −300, M6 −400 from level).
+- **50 Hz flicker** is real (still-ball blob area oscillates at 11.6 Hz = 100 Hz aliased at 29.5 fps). Exposure is now
+  100 (10 ms, saved); keep exposure a multiple of 10 ms. Re-check the HSV limits in the Camera screen after recalibrating.
+- **Throws get cancelled** when the stuck ball rests outside `throw.release_mm` (8 mm) of the aim: last run it sat 12 mm
+  away. Offered: release_mm 15, and showing the ball's distance to the aim in the countdown title. The ball looks "on" the
+  aim on screen because the drawn ball is 40 mm wide. User has not decided; slop compensation was 0 (profile 1).
+- `rest` still has M8 = 0 (saved while M8 was in overload): re-save R. Servos screen (P gain) not yet used on the arm.
+- Wi-Fi drops kill the app with the SSH session: suggest `tmux` (not installed on the Pi).
+- PRs: #3 (tested settings) and #4 (throw, stacked on #3, now also P gain screen, servo-fault reads) are open; the Pi
+  runs branch `throw-back`.
+
 ## Code notes
 - `src/main.rs` re-exports the library modules (`use paddle_balance::{bus, …}`) so that `crate::bus` paths in `app.rs` work.
 - `vision::capture` and `app` are Linux-only (`cfg(target_os = "linux")`); other platforms build a stub binary.
