@@ -137,6 +137,18 @@ to level and waits for the next ball.
 | Simulation | `tools/throw_sim.py` (MuJoCo, URDF + 68 g paddle + 2.7 g ball): at full speed the ball leaves at ~2.0 m/s, 47° up, peaks ~55 cm above the table and lands ~50 cm on the camera side; peak torque 1.3 N m (stall 2.94). **Below ~75 % speed the ball hits the camera or rolls into the jaws**: run slow previews without the ball. |
 | Joint angles | The sim uses the station viewer's mapping (calibrated range → URDF limits), checked against the real arm at level. The controller's own `zero = 2048, sign = −1` is only right for small relative moves. |
 
+**Aim (distance dial):** `[` / `]` on the Balance screen set `throw.aim_y_mm`, where on the blade the ball is thrown
+from (cyan + on the blade; `s` saves it). During the countdown the balancer steers the ball there and throws once it has
+settled within `throw.centre_mm`. In MuJoCo (full speed, 89° end pose):
+
+| Aim (mm, − = handle side) | −50 | −40 | −20 | 0 | +20 | +40 |
+|---|---|---|---|---|---|---|
+| Launch angle | 39° | 42° | 50° | 56° | 64° | 71° |
+| Distance toward the camera side | 2.6 m | 2.5 m | 2.1 m | 1.7 m | 1.2 m | 0.6 m |
+
+Flipping further than ~89° adds nothing (the ball has left); the ball's rolling speed before the throw changes the
+distance by only ~±10 cm per 60 mm/s. Real distances will be shorter (the simulated servos reach full stall torque).
+
 Order for the first real tries: Pose → `l` (level) → `t` `1` (10 %, no ball) → `t` `2` → `t` `3` → `t` `4`, watching the
 paddle in the gripper; then Balance with the ball and `t` at 100 %.
 

@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-pub const HELP: [&str; 16] = [
+pub const HELP: [&str; 18] = [
     "Space        start (real arm: needs ARMED) · while running: pause / resume (holds level)",
     "Esc          stop: the arm returns to its start pose · when stopped: back to Home",
     "b            simulation: put a ball on the paddle",
@@ -31,6 +31,8 @@ pub const HELP: [&str; 16] = [
     "a            ARM / disarm the real arm",
     "t            THROW the ball back (needs ARMED and a balancing ball): 2 s countdown, then a fast flip to the",
     "             taught end pose ([throw] in paddle.toml) and back to level. Any key cancels the countdown.",
+    "[ ]          throw aim: where on the blade the ball is thrown from (10 mm steps). Toward the handle (-) throws",
+    "             further, toward the far edge (+) a short high lob. Shown as a cyan + on the blade; s saves it.",
     "",
     "Blade view: grey = blade (Ø150), red = edge limit, dim = deadband, orange = ball, yellow = trail, magenta = tilt.",
     "Up = far side of the blade (away from the gripper), down = handle.",
@@ -138,6 +140,10 @@ pub struct BalanceScreen {
     last: Option<Snapshot>,
     /// When `t` was pressed (the loop's countdown shows up in the next frame).
     throw_req: Option<Instant>,
+    /// Throw aim along the handle axis (mm).
+    aim: f64,
+    /// Throw release radius around the aim point (mm), for the drawing.
+    release_r: f64,
 }
 
 const HIST_FRAMES: usize = 29 * 20;
@@ -157,6 +163,8 @@ impl BalanceScreen {
             stats_at: Instant::now(),
             last: None,
             throw_req: None,
+            aim: ctx.cfg.throw.aim_y_mm.clamp(-50.0, 50.0),
+            release_r: ctx.cfg.throw.centre_mm,
         }
     }
 
@@ -228,6 +236,7 @@ impl BalanceScreen {
             }
         }
         cfg.control = self.control.clone();
+        cfg.throw.aim_y_mm = self.aim;
         cfg
     }
 
@@ -393,6 +402,7 @@ impl BalanceScreen {
             KeyCode::Char('s') => {
                 let res = Config::load(&ctx.cfg_path).and_then(|mut c| {
                     c.control = self.control.clone();
+                    c.throw.aim_y_mm = self.aim;
                     let text = toml::to_string_pretty(&c)?;
                     std::fs::write(&ctx.cfg_path, text)?;
                     Ok(c)
@@ -400,6 +410,7 @@ impl BalanceScreen {
                 match res {
                     Ok(c) => {
                         ctx.cfg.control = c.control;
+                        ctx.cfg.throw.aim_y_mm = c.throw.aim_y_mm;
                         self.dirty = false;
                         self.msg(format!("saved tuning to {}", ctx.cfg_path.display()));
                     }
@@ -407,6 +418,15 @@ impl BalanceScreen {
                 }
             }
             KeyCode::Char('t') => self.request_throw(ctx),
+            KeyCode::Char(c @ ('[' | ']')) => {
+                self.aim = (self.aim + if c == ']' { 10.0 } else { -10.0 }).clamp(-50.0, 50.0);
+                self.dirty = true;
+                if let Run::Running { tx, .. } = &self.run {
+                    let _ = tx.send(Cmd::SetAim(self.aim));
+                }
+                let what = if self.aim < -5.0 { "toward the handle: longer throw" } else if self.aim > 5.0 { "toward the far edge: shorter, higher lob" } else { "centre" };
+                self.msg(format!("throw aim {:+.0} mm ({what})", self.aim));
+            }
             KeyCode::Char('b') => {
                 if let Run::Running { tx, .. } = &self.run {
                     if ctx.sim {
@@ -456,7 +476,7 @@ impl BalanceScreen {
                 if self.throw_pending() {
                     return vec![("any key", "cancel the throw")];
                 }
-                let mut v = vec![("Space", if *paused { "resume" } else { "pause" }), ("Esc", "stop"), ("t", "throw")];
+                let mut v = vec![("Space", if *paused { "resume" } else { "pause" }), ("Esc", "stop"), ("t", "throw"), ("[ ]", "aim")];
                 if ctx.sim {
                     v.push(("b", "ball"));
                 }
@@ -489,6 +509,9 @@ impl BalanceScreen {
         let trail: Vec<(f64, f64)> = self.trail.iter().copied().collect();
         let phase = self.last.as_ref().map(|s| (s.tele.phase, s.tele.paused));
         let throw_in = self.last.as_ref().and_then(|s| s.throw_in).filter(|_| self.running());
+        let aim = self.aim;
+        let pending = throw_in.is_some();
+        let release_r = self.release_r;
         let title = match (&self.run, phase) {
             (Run::Running { .. }, Some((Phase::Balance, _))) if throw_in.is_some() => {
                 let t = throw_in.unwrap_or(0.0);
@@ -534,6 +557,13 @@ impl BalanceScreen {
                         r -= 1.2;
                     }
                 }
+                // Throw aim point (cyan +), and the release circle while a throw is pending.
+                let ay = aim;
+                c.draw(&CLine { x1: -5.0, y1: ay, x2: 5.0, y2: ay, color: Color::Cyan });
+                c.draw(&CLine { x1: 0.0, y1: ay - 5.0, x2: 0.0, y2: ay + 5.0, color: Color::Cyan });
+                if pending {
+                    c.draw(&Circle { x: 0.0, y: ay, radius: release_r, color: Color::Cyan });
+                }
                 c.print(-12.0, 80.0, Line::from("far").fg(Color::DarkGray));
                 c.print(-18.0, -84.0, Line::from("handle").fg(Color::DarkGray));
             });
@@ -556,6 +586,13 @@ impl BalanceScreen {
                 Span::raw(if sel { "   ◂ ▸" } else { "" }),
             ]));
         }
+        lines.push(Line::from(vec![
+            Span::raw("   "),
+            Span::styled(format!("{:<11}", "throw aim"), Style::new()),
+            Span::raw(" "),
+            Span::styled(format!("{:>+9.0}", self.aim), Style::new().fg(Color::Cyan)),
+            Span::styled(" mm  [ ]", Style::new().fg(Color::DarkGray)),
+        ]));
         lines.push(Line::from(Span::styled(
             format!(
                 "   step {}   profile {}",

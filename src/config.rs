@@ -38,7 +38,11 @@ pub struct ThrowConfig {
     pub acc: u8,
     /// Countdown after the key press (s).
     pub delay_s: f64,
-    /// After the countdown, throw as soon as the ball is within this radius of the centre (mm) ...
+    /// Where on the blade to throw from (mm along the handle axis; + = far edge, - = handle side). It sets the
+    /// distance: in MuJoCo -50 mm throws furthest (~2.6 m), 0 ~1.7 m, +40 a short high lob (~0.6 m). During the
+    /// countdown the balancer steers the ball there. Limited to ±50 mm.
+    pub aim_y_mm: f64,
+    /// After the countdown, throw as soon as the ball is within this radius of the aim point (mm) ...
     pub centre_mm: f64,
     /// ... and slower than this (mm/s).
     pub settle_speed_mm_s: f64,
@@ -68,6 +72,7 @@ impl Default for ThrowConfig {
             max_speed_steps: 3070,
             acc: 254,
             delay_s: 2.0,
+            aim_y_mm: 0.0,
             centre_mm: 25.0,
             settle_speed_mm_s: 60.0,
             settle_timeout_s: 4.0,

@@ -131,6 +131,8 @@ pub struct Balancer {
     uv: Vector2<f64>,
     balance_start: Option<Instant>,
     longest: f64,
+    /// Where the controller holds the ball (blade mm). The centre, except while aiming a throw.
+    target: Vector2<f64>,
 }
 
 /// Image map and axes from the config (axes normalised if configured).
@@ -163,6 +165,7 @@ impl Balancer {
             uv: Vector2::zeros(),
             balance_start: None,
             longest: 0.0,
+            target: Vector2::zeros(),
         })
     }
 
@@ -184,6 +187,15 @@ impl Balancer {
         self.pid.set_cfg(c.clone());
         self.filt.set_gains(c.alpha, c.beta);
         self.cfg.control = c;
+    }
+
+    /// Hold the ball at `t` (blade mm) instead of the centre.
+    pub fn set_target(&mut self, t: Vector2<f64>) {
+        self.target = t;
+    }
+
+    pub fn target(&self) -> Vector2<f64> {
+        self.target
     }
 
     pub fn set_paused(&mut self, p: bool) {
@@ -255,7 +267,7 @@ impl Balancer {
                     let ahead = c.control.predict_ms / 1e3;
                     let p = self.filt.predict(ahead, accel);
                     let v = self.filt.vel + accel * ahead;
-                    let blade_tilt = self.pid.step(p, v, dt);
+                    let blade_tilt = self.pid.step(p - self.target, v, dt);
                     self.uv = self.axes.blade_to_uv(blade_tilt);
                     let goal = self.wrist.ticks_for(&self.cfg, self.uv);
                     let step = (0..3).map(|k| (goal[k] as i32 - current_wrist[k] as i32).abs()).max().unwrap_or(0);
@@ -484,6 +496,8 @@ pub enum Cmd {
     /// Start the throw countdown (the ball must be balancing).
     Throw,
     CancelThrow,
+    /// Throw aim along the handle axis (mm), see `throw.aim_y_mm`.
+    SetAim(f64),
     Stop,
 }
 
@@ -557,8 +571,10 @@ pub async fn run_loop<P: Plant>(
                             } else {
                                 match crate::throw::plan(&bal.cfg, &level, bal.cfg.throw.speed) {
                                     Ok(p) => {
+                                        let aim = bal.cfg.throw.aim_y_mm.clamp(-50.0, 50.0);
+                                        bal.set_target(Vector2::new(0.0, aim));
                                         emit(Event::Status(format!(
-                                            "THROW in {:.0} s at {:.0} % speed ({:.2} s move): any key cancels",
+                                            "THROW in {:.0} s at {:.0} % speed ({:.2} s move), aim {aim:+.0} mm: any key cancels",
                                             bal.cfg.throw.delay_s, p.speed_frac * 100.0, p.duration_s
                                         )));
                                         throw_at = Some((Instant::now() + Duration::from_secs_f64(bal.cfg.throw.delay_s), p));
@@ -568,8 +584,15 @@ pub async fn run_loop<P: Plant>(
                             }
                         }
                         Some(Cmd::CancelThrow) => {
+                            bal.set_target(Vector2::zeros());
                             if throw_at.take().is_some() {
                                 emit(Event::Status("throw cancelled".into()));
+                            }
+                        }
+                        Some(Cmd::SetAim(a)) => {
+                            bal.cfg.throw.aim_y_mm = a.clamp(-50.0, 50.0);
+                            if throw_at.is_some() {
+                                bal.set_target(Vector2::new(0.0, bal.cfg.throw.aim_y_mm));
                             }
                         }
                     }
@@ -593,19 +616,21 @@ pub async fn run_loop<P: Plant>(
             let mut throw_now = None;
             let mut throw_in = None;
             if let Some((at, _)) = &throw_at {
-                let tc = &bal.cfg.throw;
+                let tc = bal.cfg.throw.clone();
                 let now = Instant::now();
                 if tele.phase != Phase::Balance || matches!(action, Action::ReturnToLevel(_)) {
                     throw_at = None;
+                    bal.set_target(Vector2::zeros());
                     emit(Event::Status("throw cancelled: the ball left the paddle".into()));
                 } else if now < *at {
                     throw_in = Some((*at - now).as_secs_f64());
-                } else if tele.pos.norm() <= tc.centre_mm && tele.vel.norm() <= tc.settle_speed_mm_s {
+                } else if (tele.pos - bal.target()).norm() <= tc.centre_mm && tele.vel.norm() <= tc.settle_speed_mm_s {
                     throw_now = throw_at.take().map(|(_, p)| p);
                 } else if (now - *at).as_secs_f64() > tc.settle_timeout_s {
                     throw_at = None;
+                    bal.set_target(Vector2::zeros());
                     emit(Event::Status(format!(
-                        "throw cancelled: the ball didn't settle within {:.0} mm of the centre", tc.centre_mm
+                        "throw cancelled: the ball didn't settle within {:.0} mm of the aim point", tc.centre_mm
                     )));
                 } else {
                     throw_in = Some(0.0);
@@ -670,6 +695,7 @@ pub async fn run_loop<P: Plant>(
                 tokio::time::sleep(Duration::from_secs_f64(rest)).await;
                 emit(Event::Status("back to level...".into()));
                 plant.move_to(&level, bal.cfg.throw.return_s).await?;
+                bal.set_target(Vector2::zeros());
                 bal.returned_to_level();
                 emit(Event::Status(format!("level: put the ball on the paddle ({throws} throw{} so far)", if throws == 1 { "" } else { "s" })));
                 continue;
