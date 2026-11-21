@@ -3,7 +3,7 @@
 
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
-use st3215::protocol::{normal_position, RamRegister, ST3215Request, ST3215Response};
+use st3215::protocol::{normal_position, Error as ProtoError, RamRegister, ST3215Request, ST3215Response, ServoError};
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
 /// Snapshot of one servo, from one bulk read of 0x38..0x46.
@@ -16,6 +16,28 @@ pub struct MotorState {
     pub temperature_c: u8,
     /// ST3215 current unit is 6.5 mA.
     pub current_ma: f64,
+    /// Error flags the servo reported with this reply (see `fault_names`); 0 = none. The data is still valid.
+    pub fault: u8,
+}
+
+/// Bit per `ServoError` kind, in `FAULTS` order.
+const FAULTS: [(ServoError, &str); 7] = [
+    (ServoError::Overload, "overload"),
+    (ServoError::Overheat, "overheat"),
+    (ServoError::Voltage, "voltage"),
+    (ServoError::AngleLimit, "angle limit"),
+    (ServoError::Range, "range"),
+    (ServoError::Checksum, "checksum"),
+    (ServoError::Instruction, "instruction"),
+];
+
+fn fault_bits(errors: &[ServoError]) -> u8 {
+    FAULTS.iter().enumerate().filter(|(_, (e, _))| errors.contains(e)).fold(0, |m, (i, _)| m | (1 << i))
+}
+
+/// Names of the flags in a `MotorState::fault` mask, e.g. ["overload"].
+pub fn fault_names(mask: u8) -> Vec<&'static str> {
+    FAULTS.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, (_, n))| *n).collect()
 }
 
 const STATE_START: u8 = 0x38; // PresentPosition
@@ -24,6 +46,8 @@ const STATE_LEN: u8 = 0x47 - STATE_START; // up to and including PresentCurrent 
 pub struct Bus {
     port: SerialStream,
     timeout_ms: u64,
+    /// Error flags of the last reply (0 = none).
+    last_fault: u8,
 }
 
 /// Feetech sign-magnitude: bit 15 is the sign.
@@ -45,22 +69,34 @@ impl Bus {
             .with_context(|| {
                 format!("opening {path}; is the station still running? (sudo systemctl stop normacore-station)")
             })?;
-        Ok(Self { port, timeout_ms })
+        Ok(Self { port, timeout_ms, last_fault: 0 })
     }
 
+    /// One request, one retry (a single corrupted reply is common on a busy bus). A reply that carries servo error
+    /// flags (e.g. overload) is still a valid reply: its data is used and the flags are kept in `last_fault`.
+    /// The protocol library treats such a reply as an error, which made an overloaded gripper look unreadable.
     async fn request(&mut self, req: ST3215Request) -> Result<ST3215Response> {
-        // One retry: a single corrupted reply is common on a busy bus and not worth failing the tick for.
-        match req.async_readwrite(&mut self.port, self.timeout_ms).await {
-            Ok(r) => Ok(r),
-            Err(_) => Ok(req.async_readwrite(&mut self.port, self.timeout_ms).await?),
+        self.last_fault = 0;
+        let mut last = None;
+        for _ in 0..2 {
+            match req.async_readwrite(&mut self.port, self.timeout_ms).await {
+                Ok(r) => return Ok(r),
+                Err(ProtoError::Servo { errors, response_data, .. }) => {
+                    self.last_fault = fault_bits(&errors);
+                    return Ok(match &req {
+                        ST3215Request::Read { .. } => ST3215Response::Read { data: response_data, source_bytes: Bytes::new() },
+                        ST3215Request::Ping { .. } => ST3215Response::Ping { source_bytes: Bytes::new() },
+                        _ => ST3215Response::Write { source_bytes: Bytes::new() },
+                    });
+                }
+                Err(e) => last = Some(e),
+            }
         }
+        Err(last.map(anyhow::Error::from).unwrap_or_else(|| anyhow::anyhow!("no reply")))
     }
 
     pub async fn ping(&mut self, id: u8) -> bool {
-        ST3215Request::Ping { motor: id }
-            .async_readwrite(&mut self.port, self.timeout_ms)
-            .await
-            .is_ok()
+        self.request(ST3215Request::Ping { motor: id }).await.is_ok()
     }
 
     pub async fn read_state(&mut self, id: u8) -> Result<MotorState> {
@@ -89,6 +125,7 @@ impl Bus {
             voltage_dv: u8_at(RamRegister::PresentVoltage.address()),
             temperature_c: u8_at(RamRegister::PresentTemperature.address()),
             current_ma: (sm16(u16_at(RamRegister::PresentCurrent.address())) as f64).abs() * 6.5,
+            fault: self.last_fault,
         })
     }
 
@@ -254,6 +291,13 @@ mod tests {
         assert_eq!(&b[7..16], &[5, 0x00, 0x08, 6, 0xE8, 0x03, 7, 0xB8, 0x0B]);
         let sum: u32 = b[2..b.len() - 1].iter().map(|&x| x as u32).sum();
         assert_eq!(b[b.len() - 1], !(sum as u8));
+    }
+
+    #[test]
+    fn fault_flags_round_trip() {
+        let m = fault_bits(&[ServoError::Overload, ServoError::Overheat]);
+        assert_eq!(fault_names(m), vec!["overload", "overheat"]);
+        assert_eq!(fault_names(0), Vec::<&str>::new());
     }
 
     #[test]

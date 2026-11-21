@@ -381,6 +381,10 @@ impl PoseScreen {
                     Cell::from(range),
                     Cell::from(Span::styled(load_txt, Style::new().fg(load_color))),
                     Cell::from(st.map_or("–".into(), |s| format!("{}°C", s.temperature_c))),
+                    Cell::from(Span::styled(
+                        st.map_or(String::new(), |s| crate::bus::fault_names(s.fault).join(", ").to_uppercase()),
+                        Style::new().fg(Color::Red).bold(),
+                    )),
                 ])
             })
             .collect();
@@ -405,9 +409,10 @@ impl PoseScreen {
                     Constraint::Length(25),
                     Constraint::Length(18),
                     Constraint::Length(6),
+                    Constraint::Min(10),
                 ],
             )
-            .header(Row::new(vec!["", "joint", "goal", "present", "miss", "Δlevel", "range around level", "load", "temp"]).style(Style::new().fg(Color::DarkGray)))
+            .header(Row::new(vec!["", "joint", "goal", "present", "miss", "Δlevel", "range around level", "load", "temp", "fault"]).style(Style::new().fg(Color::DarkGray)))
             .block(Block::bordered().title(title)),
             tbl,
         );
