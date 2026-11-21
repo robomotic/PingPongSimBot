@@ -31,7 +31,7 @@ pub const HELP: [&str; 18] = [
     "a            ARM / disarm the real arm",
     "t            THROW the ball back (needs ARMED and a balancing ball): 2 s countdown, then a fast flip to the",
     "             taught end pose ([throw] in paddle.toml) and back to level. Any key cancels the countdown.",
-    "[ ]          throw aim: where on the blade the ball is thrown from (10 mm steps). Toward the handle (-) throws",
+    "[ ]          throw aim: where on the blade the ball is thrown from (5 mm steps, ±25 mm). Toward the handle (-) throws",
     "             further, toward the far edge (+) a short high lob. Shown as a cyan + on the blade; s saves it.",
     "",
     "Blade view: grey = blade (Ø150), red = edge limit, dim = deadband, orange = ball, yellow = trail, magenta = tilt.",
@@ -163,8 +163,8 @@ impl BalanceScreen {
             stats_at: Instant::now(),
             last: None,
             throw_req: None,
-            aim: ctx.cfg.throw.aim_y_mm.clamp(-50.0, 50.0),
-            release_r: ctx.cfg.throw.centre_mm,
+            aim: ctx.cfg.throw.aim_y_mm.clamp(-ctx.cfg.throw.aim_limit_mm.abs(), ctx.cfg.throw.aim_limit_mm.abs()),
+            release_r: ctx.cfg.throw.release_mm,
         }
     }
 
@@ -419,7 +419,8 @@ impl BalanceScreen {
             }
             KeyCode::Char('t') => self.request_throw(ctx),
             KeyCode::Char(c @ ('[' | ']')) => {
-                self.aim = (self.aim + if c == ']' { 10.0 } else { -10.0 }).clamp(-50.0, 50.0);
+                let lim = ctx.cfg.throw.aim_limit_mm.abs();
+                self.aim = (self.aim + if c == ']' { 5.0 } else { -5.0 }).clamp(-lim, lim);
                 self.dirty = true;
                 if let Run::Running { tx, .. } = &self.run {
                     let _ = tx.send(Cmd::SetAim(self.aim));

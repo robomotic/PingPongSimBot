@@ -69,19 +69,41 @@ impl Arm {
     /// Run a throw: set each moving joint's Acc and Goal Speed, send all goals at once, and watch position and load
     /// until the joints arrive. A joint that stays above `abort_load` for 3 reads, or a move that takes far longer
     /// than planned, stops the arm where it is. The servos' previous Acc and Goal Speed are always restored.
-    pub async fn throw_move(&mut self, plan: &ThrowPlan, abort_load: i16, timeout_factor: f64, record_after_s: f64) -> Result<ThrowReport> {
+    /// `torque_limit` (0..1000, 0 = leave): RAM Torque Limit of the moving joints during the throw.
+    pub async fn throw_move(
+        &mut self,
+        plan: &ThrowPlan,
+        abort_load: i16,
+        timeout_factor: f64,
+        record_after_s: f64,
+        torque_limit: u16,
+    ) -> Result<ThrowReport> {
         let ids: Vec<u8> = (0..7).filter(|&j| plan.moving[j]).map(|j| j as u8 + 1).collect();
         let mut saved = Vec::with_capacity(ids.len());
         for &id in &ids {
-            saved.push((id, self.bus.read_profile(id).await?));
+            let (acc, sp) = self.bus.read_profile(id).await?;
+            let tl = self.bus.read_bytes(id, RamRegister::TorqueLimit.address(), 2).await?;
+            saved.push((id, acc, sp, u16::from_le_bytes([tl[0], tl[1]])));
+        }
+        let mut boost = None;
+        if torque_limit > 0 {
+            let tl: Vec<(u8, u16)> = ids.iter().map(|&id| (id, torque_limit.min(1000))).collect();
+            self.bus.sync_write_u16(RamRegister::TorqueLimit, &tl).await?;
+            // Read back one joint: the firmware may cap it.
+            let back = self.bus.read_bytes(ids[0], RamRegister::TorqueLimit.address(), 2).await.ok().map(|b| u16::from_le_bytes([b[0], b[1]]));
+            boost = Some((saved[0].3, back.unwrap_or(0)));
         }
         let res = self.throw_inner(plan, &ids, abort_load, timeout_factor, record_after_s).await;
-        // Restore the profiles whatever happened (the arm holds its last goal meanwhile).
-        let acc: Vec<(u8, u8)> = saved.iter().map(|&(id, (a, _))| (id, a)).collect();
-        let sp: Vec<(u8, u16)> = saved.iter().map(|&(id, (_, s))| (id, s)).collect();
+        // Restore torque limit, acceleration and speed whatever happened (the arm holds its last goal meanwhile).
+        let tl: Vec<(u8, u16)> = saved.iter().map(|&(id, _, _, t)| (id, t)).collect();
+        let acc: Vec<(u8, u8)> = saved.iter().map(|&(id, a, _, _)| (id, a)).collect();
+        let sp: Vec<(u8, u16)> = saved.iter().map(|&(id, _, s, _)| (id, s)).collect();
+        let r0 = if torque_limit > 0 { self.bus.sync_write_u16(RamRegister::TorqueLimit, &tl).await } else { Ok(()) };
         let r1 = self.bus.sync_write_u8(RamRegister::Acc, &acc).await;
         let r2 = self.bus.sync_write_u16(RamRegister::GoalSpeed, &sp).await;
-        let report = res?;
+        let mut report = res?;
+        report.torque_limit = boost;
+        r0?;
         r1?;
         r2?;
         Ok(report)

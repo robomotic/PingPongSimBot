@@ -40,10 +40,14 @@ pub struct ThrowConfig {
     pub delay_s: f64,
     /// Where on the blade to throw from (mm along the handle axis; + = far edge, - = handle side). It sets the
     /// distance: in MuJoCo -50 mm throws furthest (~2.6 m), 0 ~1.7 m, +40 a short high lob (~0.6 m). During the
-    /// countdown the balancer steers the ball there. Limited to ±50 mm.
+    /// countdown the balancer steers the ball there. Limited to ±`aim_limit_mm`.
     pub aim_y_mm: f64,
+    /// Largest aim allowed (mm). Beyond ~25 mm the real balancer rarely holds the ball (2026-11-21 logs).
+    pub aim_limit_mm: f64,
+    /// Max blade tilt while steering the ball to the aim point (deg): keeps it from being flung off.
+    pub aim_max_tilt_deg: f64,
     /// After the countdown, throw as soon as the ball is within this radius of the aim point (mm) ...
-    pub centre_mm: f64,
+    pub release_mm: f64,
     /// ... and slower than this (mm/s).
     pub settle_speed_mm_s: f64,
     /// Give up if the ball hasn't settled this long after the countdown (s).
@@ -60,6 +64,9 @@ pub struct ThrowConfig {
     pub abort_load: i16,
     /// Abort if the move hasn't finished after this many times the planned duration (+0.5 s).
     pub timeout_factor: f64,
+    /// RAM Torque Limit (0..1000) of the moving joints during the throw; the old value is restored after.
+    /// The follower's servos ship at 500 (EEPROM Max Torque 500 = 50 %), which halved the throw. 0 = leave as is.
+    pub torque_limit: u16,
     /// Keep logging servos and camera this long after the move (part of `hold_s`), to see the ball leave (s).
     pub record_after_s: f64,
 }
@@ -73,7 +80,9 @@ impl Default for ThrowConfig {
             acc: 254,
             delay_s: 2.0,
             aim_y_mm: 0.0,
-            centre_mm: 25.0,
+            aim_limit_mm: 25.0,
+            aim_max_tilt_deg: 4.0,
+            release_mm: 8.0,
             settle_speed_mm_s: 60.0,
             settle_timeout_s: 4.0,
             hold_s: 0.6,
@@ -82,6 +91,7 @@ impl Default for ThrowConfig {
             limit_ticks: [60, 60, 400, 300, 60, 800, 60],
             abort_load: 950,
             timeout_factor: 3.0,
+            torque_limit: 1000,
             record_after_s: 0.4,
         }
     }

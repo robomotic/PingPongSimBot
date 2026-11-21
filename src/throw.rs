@@ -126,6 +126,8 @@ pub struct ThrowReport {
     pub servo: Vec<ServoSample>,
     /// Camera frames over the same time (real arm only).
     pub cam: Vec<CamSample>,
+    /// Torque limit during the throw: (value before, value read back after raising it).
+    pub torque_limit: Option<(u16, u16)>,
 }
 
 pub const THROW_LOG_HEADER: &str = "t,src,pos1,pos2,pos3,pos4,pos5,pos6,pos7,load1,load2,load3,load4,load5,load6,load7,\
@@ -169,10 +171,14 @@ impl ThrowReport {
         match &self.aborted {
             Some(why) => format!("throw ABORTED after {:.2} s: {why}", self.move_s),
             None => format!(
-                "throw done in {:.2} s; peak load M{} {:.0} %",
+                "throw done in {:.2} s; peak load M{} {:.0} %{}",
                 self.move_s,
                 peak.0,
-                peak.1 as f64 / 10.0
+                peak.1 as f64 / 10.0,
+                match self.torque_limit {
+                    Some((old, now)) => format!("; torque limit {:.0} % (was {:.0} %)", now as f64 / 10.0, old as f64 / 10.0),
+                    None => String::new(),
+                }
             ),
         }
     }

@@ -150,7 +150,9 @@ speed = 1.0
 max_speed_steps = 3070
 acc = 254
 delay_s = 2.0
-centre_mm = 25.0
+aim_limit_mm = 25.0
+aim_max_tilt_deg = 4.0
+release_mm = 8.0
 settle_speed_mm_s = 60.0
 settle_timeout_s = 4.0
 hold_s = 0.6
@@ -167,3 +169,5 @@ limit_ticks = [
 ]
 abort_load = 950
 timeout_factor = 3.0
+torque_limit = 1000
+record_after_s = 0.4

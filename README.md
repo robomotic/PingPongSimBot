@@ -139,7 +139,7 @@ to level and waits for the next ball.
 
 **Aim (distance dial):** `[` / `]` on the Balance screen set `throw.aim_y_mm`, where on the blade the ball is thrown
 from (cyan + on the blade; `s` saves it). During the countdown the balancer steers the ball there and throws once it has
-settled within `throw.centre_mm`. In MuJoCo (full speed, 89° end pose):
+settled within `throw.release_mm` (8 mm; steering is capped at `throw.aim_max_tilt_deg` = 4°, aim at ±`throw.aim_limit_mm` = 25 mm). In MuJoCo (full speed, 89° end pose):
 
 | Aim (mm, − = handle side) | −50 | −40 | −20 | 0 | +20 | +40 |
 |---|---|---|---|---|---|---|
