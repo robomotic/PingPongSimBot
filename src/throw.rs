@@ -9,6 +9,9 @@
 
 use crate::config::Config;
 use anyhow::{bail, Context, Result};
+use nalgebra::Vector2;
+use std::io::Write;
+use std::path::Path;
 
 /// One throw, ready for the bus.
 #[derive(Debug, Clone, PartialEq)]
@@ -92,6 +95,24 @@ pub fn plan(cfg: &Config, from: &[u16], speed_frac: f64) -> Result<ThrowPlan> {
     Ok(ThrowPlan { goals, moving, speed, acc, speed_frac, duration_s })
 }
 
+/// One read of the moving joints during a throw (joints that don't move are 0).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ServoSample {
+    /// Seconds since the goals were sent.
+    pub t: f64,
+    pub pos: [u16; 7],
+    pub load: [i16; 7],
+}
+
+/// One camera frame during a throw. The camera is fixed to the gripper, so while the ball is on the blade its
+/// position maps to blade mm with the usual homography.
+#[derive(Debug, Clone, Copy)]
+pub struct CamSample {
+    pub t: f64,
+    pub px: Option<Vector2<f64>>,
+    pub area: u32,
+}
+
 /// What happened during a throw move.
 #[derive(Debug, Clone, Default)]
 pub struct ThrowReport {
@@ -101,6 +122,45 @@ pub struct ThrowReport {
     /// Largest |goal - present| at the end, ticks.
     pub final_error: [i32; 7],
     pub aborted: Option<String>,
+    /// Servo reads during the move and for `throw.record_after_s` after it.
+    pub servo: Vec<ServoSample>,
+    /// Camera frames over the same time (real arm only).
+    pub cam: Vec<CamSample>,
+}
+
+pub const THROW_LOG_HEADER: &str = "t,src,pos1,pos2,pos3,pos4,pos5,pos6,pos7,load1,load2,load3,load4,load5,load6,load7,\
+goal1,goal2,goal3,goal4,goal5,goal6,goal7,px,py,bx,by,area";
+
+/// Write a throw log: one `servo` row per bus read and one `cam` row per camera frame, both against the time the
+/// goals were sent. `to_mm` maps a pixel to blade mm (valid while the ball is on the blade).
+pub fn write_log(path: &Path, plan: &ThrowPlan, rep: &ThrowReport, to_mm: impl Fn(Vector2<f64>) -> Vector2<f64>) -> Result<()> {
+    let mut w = std::io::BufWriter::new(std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?);
+    writeln!(w, "{THROW_LOG_HEADER}")?;
+    let goals: Vec<String> = plan.goals.iter().zip(plan.moving).map(|(g, m)| if m { g.to_string() } else { String::new() }).collect();
+    let goals = goals.join(",");
+    let mut rows: Vec<(f64, String)> = Vec::with_capacity(rep.servo.len() + rep.cam.len());
+    for s in &rep.servo {
+        let pos: Vec<String> = (0..7).map(|j| if plan.moving[j] { s.pos[j].to_string() } else { String::new() }).collect();
+        let load: Vec<String> = (0..7).map(|j| if plan.moving[j] { s.load[j].to_string() } else { String::new() }).collect();
+        rows.push((s.t, format!("{:.4},servo,{},{},{goals},,,,,", s.t, pos.join(","), load.join(","))));
+    }
+    for c in &rep.cam {
+        let blank = ",".repeat(21); // 7 positions + 7 loads + 7 goals
+        let ball = match c.px {
+            Some(p) => {
+                let b = to_mm(p);
+                format!("{:.1},{:.1},{:.2},{:.2},{}", p.x, p.y, b.x, b.y, c.area)
+            }
+            None => ",,,,0".to_string(),
+        };
+        rows.push((c.t, format!("{:.4},cam,{blank}{ball}", c.t)));
+    }
+    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    for (_, r) in rows {
+        writeln!(w, "{r}")?;
+    }
+    w.flush()?;
+    Ok(())
 }
 
 impl ThrowReport {
@@ -165,6 +225,26 @@ mod tests {
         let level = c.level().unwrap();
         let e = plan(&c, &level, 1.0).unwrap_err().to_string();
         assert!(e.contains("M2"), "{e}");
+    }
+
+    #[test]
+    fn throw_log_has_one_row_per_sample_and_fixed_columns() {
+        let c = cfg();
+        let level = c.level().unwrap();
+        let p = plan(&c, &level, 1.0).unwrap();
+        let mut rep = ThrowReport::default();
+        rep.servo.push(ServoSample { t: 0.01, pos: p.goals, load: [100; 7] });
+        rep.cam.push(CamSample { t: 0.02, px: Some(Vector2::new(320.0, 240.0)), area: 2900 });
+        rep.cam.push(CamSample { t: 0.05, px: None, area: 0 });
+        let path = std::env::temp_dir().join(format!("throw_test_{}.csv", std::process::id()));
+        write_log(&path, &p, &rep, |px| px / 10.0).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 4);
+        let n = lines[0].split(',').count();
+        assert!(lines.iter().all(|l| l.split(',').count() == n), "{text}");
+        assert!(lines[1].contains(",servo,") && lines[2].contains(",cam,") && lines[2].contains("32.00,24.00"));
     }
 
     #[test]

@@ -174,7 +174,7 @@ pub fn open(cfg: &Config, sim: bool) -> Device {
                     }
                     Some(DevCmd::Throw { plan, cfg, back, return_s }) => {
                         send(DevMsg::Moving(true));
-                        match arm.throw_move(&plan, cfg.abort_load, cfg.timeout_factor).await {
+                        match arm.throw_move(&plan, cfg.abort_load, cfg.timeout_factor, 0.0).await {
                             Ok(rep) => {
                                 send(DevMsg::Throw(rep.summary()));
                                 tokio::time::sleep(Duration::from_secs_f64(cfg.hold_s)).await;

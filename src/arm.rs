@@ -3,7 +3,7 @@
 use crate::bus::Bus;
 use crate::config::{Config, N_MOTORS, WRIST};
 use crate::control::min_jerk;
-use crate::throw::{ThrowPlan, ThrowReport};
+use crate::throw::{ServoSample, ThrowPlan, ThrowReport};
 use anyhow::Result;
 use st3215::protocol::RamRegister;
 use std::time::{Duration, Instant};
@@ -69,13 +69,13 @@ impl Arm {
     /// Run a throw: set each moving joint's Acc and Goal Speed, send all goals at once, and watch position and load
     /// until the joints arrive. A joint that stays above `abort_load` for 3 reads, or a move that takes far longer
     /// than planned, stops the arm where it is. The servos' previous Acc and Goal Speed are always restored.
-    pub async fn throw_move(&mut self, plan: &ThrowPlan, abort_load: i16, timeout_factor: f64) -> Result<ThrowReport> {
+    pub async fn throw_move(&mut self, plan: &ThrowPlan, abort_load: i16, timeout_factor: f64, record_after_s: f64) -> Result<ThrowReport> {
         let ids: Vec<u8> = (0..7).filter(|&j| plan.moving[j]).map(|j| j as u8 + 1).collect();
         let mut saved = Vec::with_capacity(ids.len());
         for &id in &ids {
             saved.push((id, self.bus.read_profile(id).await?));
         }
-        let res = self.throw_inner(plan, &ids, abort_load, timeout_factor).await;
+        let res = self.throw_inner(plan, &ids, abort_load, timeout_factor, record_after_s).await;
         // Restore the profiles whatever happened (the arm holds its last goal meanwhile).
         let acc: Vec<(u8, u8)> = saved.iter().map(|&(id, (a, _))| (id, a)).collect();
         let sp: Vec<(u8, u16)> = saved.iter().map(|&(id, (_, s))| (id, s)).collect();
@@ -87,7 +87,14 @@ impl Arm {
         Ok(report)
     }
 
-    async fn throw_inner(&mut self, plan: &ThrowPlan, ids: &[u8], abort_load: i16, timeout_factor: f64) -> Result<ThrowReport> {
+    async fn throw_inner(
+        &mut self,
+        plan: &ThrowPlan,
+        ids: &[u8],
+        abort_load: i16,
+        timeout_factor: f64,
+        record_after_s: f64,
+    ) -> Result<ThrowReport> {
         let j_of = |id: u8| id as usize - 1;
         let acc: Vec<(u8, u8)> = ids.iter().map(|&id| (id, plan.acc[j_of(id)])).collect();
         let sp: Vec<(u8, u16)> = ids.iter().map(|&id| (id, plan.speed[j_of(id)])).collect();
@@ -104,6 +111,7 @@ impl Arm {
         let limit = plan.duration_s * timeout_factor + 0.5;
         loop {
             let mut done = true;
+            let mut sample = ServoSample { t: t0.elapsed().as_secs_f64(), ..Default::default() };
             for &id in ids {
                 let j = j_of(id);
                 let s = match self.bus.read_state(id).await {
@@ -113,6 +121,8 @@ impl Arm {
                         continue;
                     }
                 };
+                sample.pos[j] = s.position;
+                sample.load[j] = s.load;
                 let err = plan.goals[j] as i32 - s.position as i32;
                 rep.final_error[j] = err;
                 rep.peak_load[j] = rep.peak_load[j].max(s.load.abs());
@@ -124,6 +134,7 @@ impl Arm {
                     }
                 }
             }
+            rep.servo.push(sample);
             rep.move_s = t0.elapsed().as_secs_f64();
             if rep.aborted.is_none() && rep.move_s > limit && !done {
                 rep.aborted = Some(format!("not there after {:.1} s (planned {:.2} s)", rep.move_s, plan.duration_s));
@@ -141,9 +152,22 @@ impl Arm {
                 return Ok(rep);
             }
             if done {
-                return Ok(rep);
+                break;
             }
         }
+        // Keep reading a little longer: the ball leaves while the arm settles.
+        let until = t0.elapsed().as_secs_f64() + record_after_s;
+        while t0.elapsed().as_secs_f64() < until {
+            let mut sample = ServoSample { t: t0.elapsed().as_secs_f64(), ..Default::default() };
+            for &id in ids {
+                if let Ok(s) = self.bus.read_state(id).await {
+                    sample.pos[j_of(id)] = s.position;
+                    sample.load[j_of(id)] = s.load;
+                }
+            }
+            rep.servo.push(sample);
+        }
+        Ok(rep)
     }
 }
 

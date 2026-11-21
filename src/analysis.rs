@@ -229,6 +229,8 @@ pub fn list_runs(dirs: &[PathBuf]) -> Vec<PathBuf> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "csv"))
+        // throw_*.csv are servo/camera logs of a throw, not balance runs.
+        .filter(|p| !p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("throw_")))
         .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
         .collect();
     v.sort_by(|a, b| b.0.cmp(&a.0));

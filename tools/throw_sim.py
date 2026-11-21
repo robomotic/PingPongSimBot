@@ -260,7 +260,7 @@ class Profile:
         return self.p
 
 
-def throw(end_ticks, speed=1.0, acc_reg=254, hold_s=1.5, video=None, fps=60, slow=1.0):
+def throw(end_ticks, speed=1.0, acc_reg=254, hold_s=1.5, video=None, fps=60, slow=1.0, ball_mm=(0.0, 0.0), ball_v_mm_s=(0.0, 0.0)):
     """Level + ball at the centre -> one fast move to end_ticks -> hold. speed scales the servo speed limit
     (1.0 = 4.71 rad/s); slow motion is speed s with acceleration s^2 (same path, longer)."""
     sim = Sim()
@@ -268,7 +268,11 @@ def throw(end_ticks, speed=1.0, acc_reg=254, hold_s=1.5, video=None, fps=60, slo
     sim.set_pose(LEVEL)
     for _ in range(int(0.6 / m.opt.timestep)):
         mujoco.mj_step(m, d)
-    sim.place_ball()
+    sim.place_ball(ball_mm[0] / 1000, ball_mm[1] / 1000)
+    if any(ball_v_mm_s):
+        R = d.site_xmat[m.site("blade_centre").id].reshape(3, 3)
+        d.qvel[sim.ball_v:sim.ball_v + 3] = R @ np.array([ball_v_mm_s[0] / 1000, ball_v_mm_s[1] / 1000, 0.0])
+        mujoco.mj_forward(m, d)
     q0 = ticks_to_q(m, LEVEL)
     q1 = ticks_to_q(m, end_ticks)
     prof = Profile(q0, q1, VMAX_RAD_S * speed, acc_reg * ACC_UNIT * speed**2)

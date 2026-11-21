@@ -190,6 +190,11 @@ impl Balancer {
         self.paused = p;
     }
 
+    /// Camera pixel -> blade mm (the calibrated homography).
+    pub fn px_to_mm(&self, px: Vector2<f64>) -> Vector2<f64> {
+        self.h.apply(px)
+    }
+
     /// The ball is about to be thrown: close the balance segment (counts toward the longest balance).
     pub fn end_for_throw(&mut self) {
         self.end_balance();
@@ -397,7 +402,28 @@ impl Plant for RealPlant {
         Ok(out)
     }
     async fn throw(&mut self, plan: &ThrowPlan, cfg: &ThrowConfig) -> Result<ThrowReport> {
-        self.arm.throw_move(plan, cfg.abort_load, cfg.timeout_factor).await
+        // Record camera frames while the arm moves (the camera is on the gripper and sees the ball leave).
+        let t0 = Instant::now();
+        let mut cam = Vec::new();
+        let rep = {
+            let rx = &mut self.cam.rx;
+            let frames = &mut cam;
+            let watch = async move {
+                while rx.changed().await.is_ok() {
+                    let d = *rx.borrow_and_update();
+                    let t = d.t.checked_duration_since(t0).map_or(0.0, |x| x.as_secs_f64());
+                    frames.push(crate::throw::CamSample { t, px: d.blob.map(|b| b.px), area: d.blob.map_or(0, |b| b.area) });
+                }
+                std::future::pending::<()>().await
+            };
+            tokio::select! {
+                r = self.arm.throw_move(plan, cfg.abort_load, cfg.timeout_factor, cfg.record_after_s) => r,
+                _ = watch => unreachable!(),
+            }
+        };
+        let mut rep = rep?;
+        rep.cam = cam;
+        Ok(rep)
     }
 }
 
@@ -627,8 +653,21 @@ pub async fn run_loop<P: Plant>(
                 let rep = plant.throw(&plan, &bal.cfg.throw).await;
                 throws += 1;
                 let rep = rep?;
-                emit(Event::Status(rep.summary()));
-                tokio::time::sleep(Duration::from_secs_f64(bal.cfg.throw.hold_s)).await;
+                let tlog = log.path.with_file_name(
+                    log.path.file_name().and_then(|n| n.to_str()).unwrap_or("run.csv").replacen("run_", "throw_", 1).replacen("sim_", "throw_sim_", 1)
+                        .replace(".csv", &format!("_{throws}.csv")),
+                );
+                let saved = crate::throw::write_log(&tlog, &plan, &rep, |px| bal.px_to_mm(px));
+                emit(Event::Status(format!(
+                    "{}; log {}",
+                    rep.summary(),
+                    match &saved {
+                        Ok(()) => tlog.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string(),
+                        Err(e) => format!("not saved: {e:#}"),
+                    }
+                )));
+                let rest = (bal.cfg.throw.hold_s - bal.cfg.throw.record_after_s).max(0.0);
+                tokio::time::sleep(Duration::from_secs_f64(rest)).await;
                 emit(Event::Status("back to level...".into()));
                 plant.move_to(&level, bal.cfg.throw.return_s).await?;
                 bal.returned_to_level();

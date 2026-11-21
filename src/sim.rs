@@ -234,6 +234,7 @@ impl Plant for SimPlant {
     async fn throw(&mut self, plan: &ThrowPlan, _cfg: &ThrowConfig) -> Result<ThrowReport> {
         // The simulated blade can't fling the ball (see tools/throw_sim.py for the physics): the move just takes
         // the planned time and the ball is gone.
+        let start = self.cmd;
         tokio::time::sleep(Duration::from_secs_f64(plan.duration_s)).await;
         for j in 0..7 {
             if plan.moving[j] {
@@ -252,7 +253,22 @@ impl Plant for SimPlant {
                 peak[j] = (150.0 + 300.0 * plan.speed_frac) as i16;
             }
         }
-        Ok(ThrowReport { move_s: plan.duration_s, peak_load: peak, ..Default::default() })
+        // Synthetic servo reads (a smooth ramp to the goals, every 5 ms) so the throw log has the real shape.
+        let mut servo = Vec::new();
+        let n = (plan.duration_s / 0.005).ceil() as usize;
+        for i in 0..=n + 40 {
+            let t = i as f64 * 0.005;
+            let s = crate::control::min_jerk((t / plan.duration_s).min(1.0));
+            let mut smp = crate::throw::ServoSample { t, ..Default::default() };
+            for j in 0..7 {
+                if plan.moving[j] {
+                    smp.pos[j] = (start[j] as f64 + (plan.goals[j] as f64 - start[j] as f64) * s).round() as u16;
+                    smp.load[j] = if s < 1.0 { peak[j] } else { 80 };
+                }
+            }
+            servo.push(smp);
+        }
+        Ok(ThrowReport { move_s: plan.duration_s, peak_load: peak, servo, ..Default::default() })
     }
     fn place_ball(&mut self) {
         let r = 15.0 + 15.0 * self.rng.uniform();

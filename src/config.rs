@@ -56,6 +56,8 @@ pub struct ThrowConfig {
     pub abort_load: i16,
     /// Abort if the move hasn't finished after this many times the planned duration (+0.5 s).
     pub timeout_factor: f64,
+    /// Keep logging servos and camera this long after the move (part of `hold_s`), to see the ball leave (s).
+    pub record_after_s: f64,
 }
 
 impl Default for ThrowConfig {
@@ -75,6 +77,7 @@ impl Default for ThrowConfig {
             limit_ticks: [60, 60, 400, 300, 60, 800, 60],
             abort_load: 950,
             timeout_factor: 3.0,
+            record_after_s: 0.4,
         }
     }
 }
