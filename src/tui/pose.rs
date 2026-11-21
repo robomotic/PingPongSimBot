@@ -300,7 +300,11 @@ impl PoseScreen {
         let (Some(g), Some(dev)) = (self.goals.as_mut(), &self.dev) else { return };
         let j = self.sel;
         if j == 7 {
-            let next = (g[7] as i32 + dir * GRIP_STEPS[self.grip_step_i] as i32).clamp(0, 4095) as u16;
+            // Opening a squeezed grip: the goal is past where the jaws stopped on the handle, so step from where the
+            // jaws are, or the first presses would only release the squeeze and nothing would visibly move.
+            let present = self.states.map_or(g[7], |s| s[7].position);
+            let base = if dir > 0 { g[7].max(present) } else { g[7] };
+            let next = (base as i32 + dir * GRIP_STEPS[self.grip_step_i] as i32).clamp(0, 4095) as u16;
             g[7] = next;
             let _ = dev.tx.send(DevCmd::Grip(next));
             return;

@@ -327,23 +327,42 @@ impl RealPlant {
         use st3215::protocol::RamRegister;
         let h = if roi { cfg.camera.homography.map(|h| Homography::from_row_major(&h)) } else { None };
         let (mut arm, start) = crate::arm::Arm::open(cfg).await?;
-        if let Some(rest) = cfg.poses.rest.filter(|_| check_rest) {
-            for j in 0..7 {
-                let d = (start[j] as i32 - rest[j] as i32).abs();
-                if d > cfg.safety.start_tolerance_ticks as i32 {
-                    bail!(
-                        "M{} is {d} ticks from the rest pose (limit {}). Wrong port, or the arm is not at rest.",
-                        j + 1,
-                        cfg.safety.start_tolerance_ticks
-                    );
-                }
-            }
+        if check_rest {
+            check_start_pose(&start, cfg)?;
         }
         let acc: Vec<(u8, u8)> = WRIST.iter().map(|&j| (j as u8 + 1, cfg.bus.wrist_acc)).collect();
         arm.bus.sync_write_u8(RamRegister::Acc, &acc).await?;
         let cam = crate::vision::capture::start(&cfg.camera, h, None)?;
         Ok(Self { arm, cam, start })
     }
+}
+
+/// A run may start from the rest pose or the level pose (where it goes first anyway): every joint of M1..M7 within
+/// `safety.start_tolerance_ticks` of either. Catches a wrong bus port or an arm left somewhere unexpected.
+pub fn check_start_pose(start: &[u16], cfg: &Config) -> Result<()> {
+    let tol = cfg.safety.start_tolerance_ticks as i32;
+    let poses: Vec<(&str, [u16; N_MOTORS])> =
+        [("rest", cfg.poses.rest), ("level", cfg.poses.level)].into_iter().filter_map(|(n, p)| p.map(|p| (n, p))).collect();
+    if poses.is_empty() {
+        return Ok(());
+    }
+    // Worst joint against each pose.
+    let worst = |p: &[u16; N_MOTORS]| (0..7).map(|j| (j, (start[j] as i32 - p[j] as i32).abs())).max_by_key(|&(_, d)| d).unwrap();
+    if poses.iter().any(|(_, p)| worst(p).1 <= tol) {
+        return Ok(());
+    }
+    let detail: Vec<String> = poses
+        .iter()
+        .map(|(n, p)| {
+            let (j, d) = worst(p);
+            format!("M{} is {d} ticks from {n}", j + 1)
+        })
+        .collect();
+    bail!(
+        "the arm is not at rest or level ({}; limit {}). Go to rest or level on the Pose screen (r / l), or check the bus port.",
+        detail.join(", "),
+        tol
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -639,4 +658,24 @@ pub async fn run_loop<P: Plant>(
     };
     emit(Event::Finished(summary.clone()));
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_may_start_at_rest_or_at_level() {
+        let mut cfg = Config::example();
+        let level = cfg.level().unwrap();
+        let mut rest = level;
+        rest[5] += 290; // like the real rest pose: M6 290 ticks from level
+        cfg.poses.rest = Some(rest);
+        assert!(check_start_pose(&level, &cfg).is_ok(), "at level");
+        assert!(check_start_pose(&rest, &cfg).is_ok(), "at rest");
+        let mut off = level;
+        off[2] += 400;
+        let e = check_start_pose(&off, &cfg).unwrap_err().to_string();
+        assert!(e.contains("M3 is 400 ticks from level"), "{e}");
+    }
 }
