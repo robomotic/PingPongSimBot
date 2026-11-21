@@ -2,7 +2,7 @@
 //! 8 servos at ~10 Hz and executes moves. The UI never waits on bus I/O.
 
 use crate::arm::Arm;
-use crate::bus::MotorState;
+use crate::bus::{MotorState, ServoGains};
 use crate::config::{Config, ThrowConfig};
 use crate::throw::ThrowPlan;
 use crate::control::min_jerk;
@@ -15,6 +15,10 @@ pub enum DevCmd {
     MoveArm { goals: [u16; 7], secs: f64 },
     /// Set the gripper (M8) goal.
     Grip(u16),
+    /// Read P/D/I and torque limits of all 8 servos.
+    ReadGains,
+    /// Write P gains (EEPROM, persistent) to these servos: (id, P).
+    WriteP(Vec<(u8, u8)>),
     /// Throw move, hold, then a smooth return to `back`.
     Throw { plan: ThrowPlan, cfg: ThrowConfig, back: [u16; 7], return_s: f64 },
     Close,
@@ -27,6 +31,10 @@ pub enum DevMsg {
     Moving(bool),
     /// Result line of a throw move.
     Throw(String),
+    /// Gains of M1..M8 (None = that servo didn't answer).
+    Gains([Option<ServoGains>; 8]),
+    /// Result line of a gain write.
+    Info(String),
     Error(String),
     Closed,
 }
@@ -48,6 +56,7 @@ struct SimArm {
     pos: [f64; 8],
     /// M8 position where the jaws touch the handle (closing = decreasing ticks, like the real arm).
     handle_at: f64,
+    gains: [ServoGains; 8],
 }
 
 impl SimArm {
@@ -84,6 +93,7 @@ pub fn open(cfg: &Config, sim: bool) -> Device {
                 goal: start.map(|t| t as f64),
                 pos: start.map(|t| t as f64),
                 handle_at: cfg.poses.grip.map_or(start[7] as f64 - 40.0, |g| g as f64 + 40.0),
+                gains: [ServoGains { p: 16, d: 0, i: 0, max_torque: 500, torque_limit: 500 }; 8],
             };
             send(DevMsg::Opened { goals: start });
             let mut tick = tokio::time::interval(Duration::from_millis(100));
@@ -99,6 +109,14 @@ pub fn open(cfg: &Config, sim: bool) -> Device {
                             send(DevMsg::Moving(true));
                         }
                         Some(DevCmd::Grip(g)) => arm.goal[7] = g as f64,
+                        Some(DevCmd::ReadGains) => send(DevMsg::Gains(arm.gains.map(Some))),
+                        Some(DevCmd::WriteP(v)) => {
+                            for &(id, p) in &v {
+                                arm.gains[id as usize - 1].p = p;
+                            }
+                            send(DevMsg::Info(format!("wrote P to {} servo(s) (simulated)", v.len())));
+                            send(DevMsg::Gains(arm.gains.map(Some)));
+                        }
                         Some(DevCmd::Throw { plan, cfg, back, return_s }) => {
                             send(DevMsg::Moving(true));
                             let mut from = [0.0; 7];
@@ -171,6 +189,34 @@ pub fn open(cfg: &Config, sim: bool) -> Device {
                             send(DevMsg::Error(format!("move failed: {e:#}")));
                         }
                         send(DevMsg::Moving(false));
+                    }
+                    Some(DevCmd::ReadGains) => {
+                        let mut g = [None; 8];
+                        for id in 1..=8u8 {
+                            g[id as usize - 1] = arm.bus.read_gains(id).await.ok();
+                        }
+                        send(DevMsg::Gains(g));
+                    }
+                    Some(DevCmd::WriteP(v)) => {
+                        let mut ok = 0;
+                        let mut bad = Vec::new();
+                        for &(id, p) in &v {
+                            match arm.bus.write_eeprom_u8(id, crate::bus::EEPROM_P, p).await {
+                                Ok(back) if back == p => ok += 1,
+                                Ok(back) => bad.push(format!("M{id} reads back {back}")),
+                                Err(e) => bad.push(format!("M{id}: {e:#}")),
+                            }
+                        }
+                        if bad.is_empty() {
+                            send(DevMsg::Info(format!("wrote P to {ok} servo(s), verified")));
+                        } else {
+                            send(DevMsg::Error(format!("P write: {ok} ok; {}", bad.join("; "))));
+                        }
+                        let mut g = [None; 8];
+                        for id in 1..=8u8 {
+                            g[id as usize - 1] = arm.bus.read_gains(id).await.ok();
+                        }
+                        send(DevMsg::Gains(g));
                     }
                     Some(DevCmd::Throw { plan, cfg, back, return_s }) => {
                         send(DevMsg::Moving(true));

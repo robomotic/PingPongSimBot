@@ -142,6 +142,45 @@ impl Bus {
         self.sync_write(reg.address(), data).await
     }
 
+    /// Write one byte to one servo and wait for its reply.
+    pub async fn write_u8(&mut self, id: u8, address: u8, value: u8) -> Result<()> {
+        self.request(ST3215Request::Write { motor: id, address, data: Bytes::copy_from_slice(&[value]) })
+            .await
+            .with_context(|| format!("writing motor {id} @0x{address:02X}"))?;
+        Ok(())
+    }
+
+    /// Persistent (EEPROM) one-byte write: unlock, write, lock again; returns the value read back. Used for the P gain.
+    /// A servo whose Response Status Level only answers reads sends no reply to a write, so a missing reply is not an
+    /// error here: the read-back decides. The lock is always restored and checked.
+    pub async fn write_eeprom_u8(&mut self, id: u8, address: u8, value: u8) -> Result<u8> {
+        let lock = RamRegister::Lock.address();
+        let _ = self.write_u8(id, lock, 0).await;
+        let _ = self.write_u8(id, address, value).await;
+        let _ = self.write_u8(id, lock, 1).await;
+        let back = self.read_bytes(id, address, 1).await?[0];
+        let locked = self.read_bytes(id, lock, 1).await?[0];
+        if locked != 1 {
+            let _ = self.write_u8(id, lock, 1).await;
+            bail!("motor {id}: EEPROM lock reads {locked} after the write");
+        }
+        Ok(back)
+    }
+
+    /// Position-loop gains and torque limits of one servo (see `ServoGains`).
+    pub async fn read_gains(&mut self, id: u8) -> Result<ServoGains> {
+        let pdi = self.read_bytes(id, EEPROM_P, 3).await?;
+        let mt = self.read_bytes(id, EEPROM_MAX_TORQUE, 2).await?;
+        let tl = self.read_bytes(id, RamRegister::TorqueLimit.address(), 2).await?;
+        Ok(ServoGains {
+            p: pdi[0],
+            d: pdi[1],
+            i: pdi[2],
+            max_torque: u16::from_le_bytes([mt[0], mt[1]]),
+            torque_limit: u16::from_le_bytes([tl[0], tl[1]]),
+        })
+    }
+
     /// Acc (1 byte) and Goal Speed (2 bytes) of one servo: the profile it uses for position moves.
     pub async fn read_profile(&mut self, id: u8) -> Result<(u8, u16)> {
         let acc = self.read_bytes(id, RamRegister::Acc.address(), 1).await?[0];
@@ -175,6 +214,21 @@ impl Bus {
         self.sync_write_u8(RamRegister::TorqueEnable, &torque).await?;
         Ok(present)
     }
+}
+
+/// EEPROM addresses (ST3215): P, D, I coefficients (1 byte each, consecutive) and Max Torque (2 bytes, 0..1000).
+pub const EEPROM_P: u8 = 0x15;
+pub const EEPROM_MAX_TORQUE: u8 = 0x10;
+
+/// Position-loop gains and torque limits of one servo. P/D/I and Max Torque live in EEPROM (persistent);
+/// Torque Limit is the RAM copy (reset from Max Torque at power-up).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServoGains {
+    pub p: u8,
+    pub d: u8,
+    pub i: u8,
+    pub max_torque: u16,
+    pub torque_limit: u16,
 }
 
 /// How far a saved grip may be from the present M8 position and still be applied automatically.

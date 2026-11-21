@@ -91,6 +91,8 @@ impl PoseScreen {
                     self.moving = m;
                 }
                 DevMsg::Throw(m) => self.msg = Some((!m.contains("ABORTED"), m)),
+                DevMsg::Gains(_) => {}
+                DevMsg::Info(m) => self.msg = Some((true, m)),
                 DevMsg::Error(e) => self.msg = Some((false, e)),
                 DevMsg::Closed => closed = true,
             }

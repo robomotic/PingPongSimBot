@@ -11,6 +11,7 @@ mod camview;
 mod device;
 mod pose;
 mod results;
+mod servos;
 mod system;
 
 use crate::config::Config;
@@ -34,14 +35,16 @@ enum Screen {
     Pose,
     Camera,
     Calibrate,
+    Servos,
 }
 
-const HOME_ITEMS: [(&str, &str, bool); 6] = [
+const HOME_ITEMS: [(&str, &str, bool); 7] = [
     ("Balance", "run + live tuning", true),
     ("Results", "past runs, compare", true),
     ("Pose", "joints & gripper: move, go to / save level and rest, set the grip", true),
     ("Camera", "live view, detector view, colour & exposure tuning", true),
     ("Calibrate", "camera map wizard (auto-capture); axes: calib-axes for now", true),
+    ("Servos", "P gain per joint: read, change, write to the servos", true),
     ("System ID", "servo identification   (ElRobotSysId)", false),
 ];
 
@@ -117,6 +120,7 @@ struct App {
     pose: pose::PoseScreen,
     camera: camera::CameraScreen,
     calibrate: calibrate::CalibrateScreen,
+    servos: servos::ServosScreen,
     sys: SysView,
     sys_tx: tokio::sync::mpsc::UnboundedSender<system::SysMsg>,
     sys_rx: tokio::sync::mpsc::UnboundedReceiver<system::SysMsg>,
@@ -141,6 +145,7 @@ pub async fn run(cfg_path: &Path, log_dir: &Path, sim: bool) -> Result<()> {
         pose: pose::PoseScreen::default(),
         camera: camera::CameraScreen::default(),
         calibrate: calibrate::CalibrateScreen::default(),
+        servos: servos::ServosScreen::default(),
         ctx,
         screen: Screen::Home,
         home_sel: 0,
@@ -157,6 +162,7 @@ pub async fn run(cfg_path: &Path, log_dir: &Path, sim: bool) -> Result<()> {
             app.pose.pump(&app.ctx);
             app.camera.pump();
             app.calibrate.pump();
+            app.servos.pump();
             while event::poll(Duration::ZERO)? {
                 if let Event::Key(k) = event::read()? {
                     if k.kind == KeyEventKind::Press {
@@ -234,6 +240,7 @@ impl App {
                 KeyCode::Char('3') => self.open(2),
                 KeyCode::Char('4') => self.open(3),
                 KeyCode::Char('5') => self.open(4),
+                KeyCode::Char('6') => self.open(5),
                 KeyCode::Char('x') => self.ask_station(),
                 KeyCode::Char('c') => self.sys_action(system::SysAction::ReattachCamera, "re-attaching the camera..."),
                 KeyCode::Char('r') => self.sys_action(system::SysAction::CheckBus, "checking the bus..."),
@@ -266,6 +273,11 @@ impl App {
             }
             Screen::Camera => {
                 if self.camera.key(k, &mut self.ctx) {
+                    self.screen = Screen::Home;
+                }
+            }
+            Screen::Servos => {
+                if self.servos.key(k, &mut self.ctx) {
                     self.screen = Screen::Home;
                 }
             }
@@ -355,6 +367,14 @@ impl App {
                     self.screen = Screen::Pose;
                 }
             }
+            5 => {
+                if self.balance.running() {
+                    self.sys.msg = Some((false, "stop the balance run first: it owns the bus".into()));
+                } else {
+                    self.servos.enter(&self.ctx);
+                    self.screen = Screen::Servos;
+                }
+            }
             3 | 4 => {
                 if self.balance.running() && !self.ctx.sim {
                     self.sys.msg = Some((false, "stop the balance run first: it owns the camera".into()));
@@ -386,6 +406,7 @@ impl App {
             Screen::Pose => ("POSE", self.pose.keys(&self.ctx)),
             Screen::Camera => ("CAMERA", self.camera.keys(&self.ctx)),
             Screen::Calibrate => ("CALIBRATE", self.calibrate.keys()),
+            Screen::Servos => ("SERVOS", self.servos.keys(&self.ctx)),
         };
         header(f, head, title, &self.ctx, self.balance.running());
         match self.screen {
@@ -395,6 +416,7 @@ impl App {
             Screen::Pose => self.pose.draw(f, body, &self.ctx),
             Screen::Camera => self.camera.draw(f, body, &self.ctx),
             Screen::Calibrate => self.calibrate.draw(f, body),
+            Screen::Servos => self.servos.draw(f, body, &self.ctx),
         }
         footer(f, foot, &keys);
         if let Some(c) = self.confirm {
@@ -403,7 +425,7 @@ impl App {
         if self.help {
             let lines = match self.screen {
                 Screen::Home => vec![
-                    "↑↓ / Enter   choose a screen (1 Balance, 2 Results, 3 Pose, 4 Camera, 5 Calibrate)",
+                    "↑↓ / Enter   choose a screen (1 Balance, 2 Results, 3 Pose, 4 Camera, 5 Calibrate, 6 Servos)",
                     "x            stop / start the NormaCore station (asks first). Stopping re-attaches the camera and checks the bus",
                     "c            re-attach the camera to the kernel (after the station used it)",
                     "r            check the bus: which servos answer, voltage, temperature, gripper load (read-only, nothing moves)",
@@ -416,6 +438,7 @@ impl App {
                 Screen::Pose => pose::HELP.to_vec(),
                 Screen::Camera => camera::HELP.to_vec(),
                 Screen::Calibrate => calibrate::HELP.to_vec(),
+                Screen::Servos => servos::HELP.to_vec(),
             };
             help_popup(f, &lines);
         }
