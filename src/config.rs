@@ -20,6 +20,81 @@ pub struct Config {
     pub control: ControlConfig,
     pub safety: Safety,
     pub system: SystemConfig,
+    pub throw: ThrowConfig,
+}
+
+/// "Throw back" (Balance screen `t`, Pose screen preview). See `throw.rs` and tools/throw_sim.py.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThrowConfig {
+    /// End pose of M1..M7: blade about upright, face toward the camera side. Taught on the Pose screen with `T`.
+    /// Default: the pose taught on 2026-11-20 (blade ~78 deg, simulated in MuJoCo).
+    pub end: Option<[u16; 7]>,
+    /// Fraction of full servo speed for a real throw. Below ~0.75 the ball hits the camera (simulation).
+    pub speed: f64,
+    /// Goal Speed register (steps/s) of the joint that moves furthest, at full speed. 3070 steps/s = 4.71 rad/s.
+    pub max_speed_steps: u16,
+    /// Acc register (unit 100 steps/s^2) of the joint that moves furthest, at full speed (1..254).
+    pub acc: u8,
+    /// Countdown after the key press (s).
+    pub delay_s: f64,
+    /// Where on the blade to throw from (mm along the handle axis; + = far edge, - = handle side). It sets the
+    /// distance: in MuJoCo -50 mm throws furthest (~2.6 m), 0 ~1.7 m, +40 a short high lob (~0.6 m). During the
+    /// countdown the balancer steers the ball there. Limited to ±`aim_limit_mm`.
+    pub aim_y_mm: f64,
+    /// Largest aim allowed (mm). Beyond ~25 mm the real balancer rarely holds the ball (2026-11-21 logs).
+    pub aim_limit_mm: f64,
+    /// Max blade tilt while steering the ball to the aim point (deg): keeps it from being flung off.
+    pub aim_max_tilt_deg: f64,
+    /// After the countdown, throw as soon as the ball is within this radius of the aim point (mm) ...
+    pub release_mm: f64,
+    /// ... and slower than this (mm/s).
+    pub settle_speed_mm_s: f64,
+    /// Give up if the ball hasn't settled this long after the countdown (s).
+    pub settle_timeout_s: f64,
+    /// Time at the end pose before returning to level (s).
+    pub hold_s: f64,
+    /// Duration of the slow return to level (s).
+    pub return_s: f64,
+    /// Joints whose end goal is closer than this to the start (ticks) don't move (hand-teaching noise).
+    pub min_joint_ticks: u16,
+    /// How far each of M1..M7 may be from the level pose in the end pose (ticks). The throw is refused otherwise.
+    pub limit_ticks: [u16; 7],
+    /// Abort (hold where it is) if a moving joint's load stays above this (0..1000) for 3 reads in a row.
+    pub abort_load: i16,
+    /// Abort if the move hasn't finished after this many times the planned duration (+0.5 s).
+    pub timeout_factor: f64,
+    /// RAM Torque Limit (0..1000) of the moving joints during the throw; the old value is restored after.
+    /// The follower's servos ship at 500 (EEPROM Max Torque 500 = 50 %), which halved the throw. 0 = leave as is.
+    pub torque_limit: u16,
+    /// Keep logging servos and camera this long after the move (part of `hold_s`), to see the ball leave (s).
+    pub record_after_s: f64,
+}
+
+impl Default for ThrowConfig {
+    fn default() -> Self {
+        Self {
+            end: Some([1999, 1015, 1763, 3131, 1880, 1237, 2220]),
+            speed: 1.0,
+            max_speed_steps: 3070,
+            acc: 254,
+            delay_s: 2.0,
+            aim_y_mm: 0.0,
+            aim_limit_mm: 25.0,
+            aim_max_tilt_deg: 4.0,
+            release_mm: 8.0,
+            settle_speed_mm_s: 60.0,
+            settle_timeout_s: 4.0,
+            hold_s: 0.6,
+            return_s: 2.0,
+            min_joint_ticks: 20,
+            limit_ticks: [60, 60, 400, 300, 60, 800, 60],
+            abort_load: 950,
+            timeout_factor: 3.0,
+            torque_limit: 1000,
+            record_after_s: 0.4,
+        }
+    }
 }
 
 /// The Pi around the robot: the NormaCore station service and the wrist camera's USB identity.
@@ -158,6 +233,7 @@ impl Default for Config {
             control: ControlConfig::default(),
             safety: Safety::default(),
             system: SystemConfig::default(),
+            throw: ThrowConfig::default(),
         }
     }
 }

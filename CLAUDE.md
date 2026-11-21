@@ -78,10 +78,27 @@ should walk through every screen with the user watching.
 - Known gap: the simulator matches the real offset size but wobbles slower (0.27 Hz vs 0.95 Hz real). Refit it once the
   ElRobotSysId servo data exists.
 
+## Throw back (2026-11-20, built, not yet run on the real arm)
+Balance `t` (ARMED, 2 s countdown, throw when the ball is within 25 mm), Pose `t` preview 10/25/50/100 % without the ball,
+`T` saves `throw.end`. Engine: `throw.rs` (plan: per-joint Goal Speed/Acc scaled by distance), `Arm::throw_move` (restores
+the profiles; aborts on stall), `Plant::throw`. MuJoCo model: `tools/throw_sim.py` (run with
+`MUJOCO_GL=glfw ~/.pyenv/versions/antifake/bin/python3`). Full speed: ball 2.0 m/s, apex 55 cm, lands 50 cm toward the
+camera side; <75 % hits the camera. **Absolute joint angles**: use the station viewer mapping (angle = lower + (tick −
+range_min)/(range_max − range_min)·(upper − lower), follower ranges in throw_sim.py), not `joints.zero/sign`, which puts
+the arm under the table. At level M2 and M4 sit at the ends of their calibrated ranges. Station calibration store is
+encrypted; read the ranges through station_py (MotorState.get_range_min/max) while the station runs.
+First real session: previews at 10 → 100 % with the user watching the grip, then a ball throw at 100 %.
+**Follower servo registers (read 2026-11-21, all M1–M8):** EEPROM Max Torque 500 and RAM Torque Limit 500 (= 50 %),
+P 16 / D 0 / I 0 (Feetech default P 32), protection current 500, overload 25 % for 2 s → 20 %. The 50 % cap halved the
+first real throws (load flat at 50 %, move 0.58 s vs 0.25 s planned); the throw now raises the RAM Torque Limit of the
+moving joints to `throw.torque_limit` (1000) and restores it. P 16 probably also explains the ~150 ms servo lag and
+M6's tracking error while balancing; changing it means an EEPROM write (persistent, affects the station): ask first.
+Read-only register dump: a READ-packet script with `~/lrenv/bin/python` (pyserial), app and station stopped.
+
 ## Code notes
 - `src/main.rs` re-exports the library modules (`use paddle_balance::{bus, …}`) so that `crate::bus` paths in `app.rs` work.
 - `vision::capture` and `app` are Linux-only (`cfg(target_os = "linux")`); other platforms build a stub binary.
-- Tests: `cargo test` (25 tests, including `default_gains_balance_a_delayed_ball`, `controller_balances_the_simulated_ball`
+- Tests: `cargo test` (31 tests, including the throw planner in `throw.rs`, including `default_gains_balance_a_delayed_ball`, `controller_balances_the_simulated_ball`
   (the real engine on SimPlant), and `first_real_run_matches_the_python_analysis`).
 - `analysis::lag_samples` correlates frame-to-frame changes (raw signals saturate on drift); it gives 5/5/4 frames on the real run.
 - `bus.rs` is duplicated in ElRobotSysId. Keep fixes in sync, or extract a shared crate if it grows.

@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-pub const HELP: [&str; 14] = [
+pub const HELP: [&str; 18] = [
     "Space        start (real arm: needs ARMED) · while running: pause / resume (holds level)",
     "Esc          stop: the arm returns to its start pose · when stopped: back to Home",
     "b            simulation: put a ball on the paddle",
@@ -29,6 +29,10 @@ pub const HELP: [&str; 14] = [
     "s            save the tuning to paddle.toml ([control] only)",
     "Enter        after a run: open it in Results",
     "a            ARM / disarm the real arm",
+    "t            THROW the ball back (needs ARMED and a balancing ball): 2 s countdown, then a fast flip to the",
+    "             taught end pose ([throw] in paddle.toml) and back to level. Any key cancels the countdown.",
+    "[ ]          throw aim: where on the blade the ball is thrown from (5 mm steps, ±25 mm). Toward the handle (-) throws",
+    "             further, toward the far edge (+) a short high lob. Shown as a cyan + on the blade; s saves it.",
     "",
     "Blade view: grey = blade (Ø150), red = edge limit, dim = deadband, orange = ball, yellow = trail, magenta = tilt.",
     "Up = far side of the blade (away from the gripper), down = handle.",
@@ -134,6 +138,12 @@ pub struct BalanceScreen {
     stats: Stats,
     stats_at: Instant,
     last: Option<Snapshot>,
+    /// When `t` was pressed (the loop's countdown shows up in the next frame).
+    throw_req: Option<Instant>,
+    /// Throw aim along the handle axis (mm).
+    aim: f64,
+    /// Throw release radius around the aim point (mm), for the drawing.
+    release_r: f64,
 }
 
 const HIST_FRAMES: usize = 29 * 20;
@@ -152,11 +162,50 @@ impl BalanceScreen {
             stats: Stats::default(),
             stats_at: Instant::now(),
             last: None,
+            throw_req: None,
+            aim: ctx.cfg.throw.aim_y_mm.clamp(-ctx.cfg.throw.aim_limit_mm.abs(), ctx.cfg.throw.aim_limit_mm.abs()),
+            release_r: ctx.cfg.throw.release_mm,
         }
     }
 
     pub fn running(&self) -> bool {
         matches!(self.run, Run::Running { .. })
+    }
+
+    /// A throw countdown is running (any key cancels it).
+    pub fn throw_pending(&self) -> bool {
+        self.running()
+            && (self.throw_req.is_some_and(|t| t.elapsed().as_millis() < 400)
+                || self.last.as_ref().is_some_and(|s| s.tele.phase == Phase::Balance && s.throw_in.is_some()))
+    }
+
+    pub fn cancel_throw(&mut self) {
+        self.throw_req = None;
+        if let Run::Running { tx, .. } = &self.run {
+            let _ = tx.send(Cmd::CancelThrow);
+        }
+    }
+
+    fn request_throw(&mut self, ctx: &mut Ctx) {
+        let Run::Running { tx, paused, .. } = &self.run else {
+            self.msg("throw: start a run first (Space) and put the ball on the paddle");
+            return;
+        };
+        if *paused {
+            self.msg("throw: resume first (Space)");
+            return;
+        }
+        if !ctx.armed() {
+            self.msg("press a to ARM first: the throw is a fast, large move");
+            return;
+        }
+        if !self.last.as_ref().is_some_and(|s| s.tele.phase == Phase::Balance) {
+            self.msg("throw: wait until the ball is balancing");
+            return;
+        }
+        let _ = tx.send(Cmd::Throw);
+        self.throw_req = Some(Instant::now());
+        ctx.disarm();
     }
 
     fn msg(&mut self, m: impl Into<String>) {
@@ -187,6 +236,7 @@ impl BalanceScreen {
             }
         }
         cfg.control = self.control.clone();
+        cfg.throw.aim_y_mm = self.aim;
         cfg
     }
 
@@ -352,6 +402,7 @@ impl BalanceScreen {
             KeyCode::Char('s') => {
                 let res = Config::load(&ctx.cfg_path).and_then(|mut c| {
                     c.control = self.control.clone();
+                    c.throw.aim_y_mm = self.aim;
                     let text = toml::to_string_pretty(&c)?;
                     std::fs::write(&ctx.cfg_path, text)?;
                     Ok(c)
@@ -359,11 +410,23 @@ impl BalanceScreen {
                 match res {
                     Ok(c) => {
                         ctx.cfg.control = c.control;
+                        ctx.cfg.throw.aim_y_mm = c.throw.aim_y_mm;
                         self.dirty = false;
                         self.msg(format!("saved tuning to {}", ctx.cfg_path.display()));
                     }
                     Err(e) => self.msg(format!("save failed: {e:#}")),
                 }
+            }
+            KeyCode::Char('t') => self.request_throw(ctx),
+            KeyCode::Char(c @ ('[' | ']')) => {
+                let lim = ctx.cfg.throw.aim_limit_mm.abs();
+                self.aim = (self.aim + if c == ']' { 5.0 } else { -5.0 }).clamp(-lim, lim);
+                self.dirty = true;
+                if let Run::Running { tx, .. } = &self.run {
+                    let _ = tx.send(Cmd::SetAim(self.aim));
+                }
+                let what = if self.aim < -5.0 { "toward the handle: longer throw" } else if self.aim > 5.0 { "toward the far edge: shorter, higher lob" } else { "centre" };
+                self.msg(format!("throw aim {:+.0} mm ({what})", self.aim));
             }
             KeyCode::Char('b') => {
                 if let Run::Running { tx, .. } = &self.run {
@@ -411,7 +474,10 @@ impl BalanceScreen {
                 v
             }
             Run::Running { paused, .. } => {
-                let mut v = vec![("Space", if *paused { "resume" } else { "pause" }), ("Esc", "stop")];
+                if self.throw_pending() {
+                    return vec![("any key", "cancel the throw")];
+                }
+                let mut v = vec![("Space", if *paused { "resume" } else { "pause" }), ("Esc", "stop"), ("t", "throw"), ("[ ]", "aim")];
                 if ctx.sim {
                     v.push(("b", "ball"));
                 }
@@ -443,7 +509,21 @@ impl BalanceScreen {
         let tilt = self.last.as_ref().map(|s| s.tele.tilt);
         let trail: Vec<(f64, f64)> = self.trail.iter().copied().collect();
         let phase = self.last.as_ref().map(|s| (s.tele.phase, s.tele.paused));
+        let throw_in = self.last.as_ref().and_then(|s| s.throw_in).filter(|_| self.running());
+        let aim = self.aim;
+        let pending = throw_in.is_some();
+        let release_r = self.release_r;
         let title = match (&self.run, phase) {
+            (Run::Running { .. }, Some((Phase::Balance, _))) if throw_in.is_some() => {
+                let t = throw_in.unwrap_or(0.0);
+                if t > 0.0 {
+                    let total = 2.0f64.max(t);
+                    let n = ((t / total) * 10.0).ceil() as usize;
+                    format!(" THROW in {t:.1} s {}{} · any key cancels ", "█".repeat(n), "░".repeat(10 - n.min(10)))
+                } else {
+                    " THROW: waiting for the ball to settle · any key cancels ".to_string()
+                }
+            }
             (Run::Running { .. }, Some((_, true))) => " blade · paused ".to_string(),
             (Run::Running { .. }, Some((Phase::Balance, _))) => {
                 format!(" blade · balancing {:.1} s ", self.last.as_ref().map_or(0.0, |s| s.tele.balance_s))
@@ -478,6 +558,13 @@ impl BalanceScreen {
                         r -= 1.2;
                     }
                 }
+                // Throw aim point (cyan +), and the release circle while a throw is pending.
+                let ay = aim;
+                c.draw(&CLine { x1: -5.0, y1: ay, x2: 5.0, y2: ay, color: Color::Cyan });
+                c.draw(&CLine { x1: 0.0, y1: ay - 5.0, x2: 0.0, y2: ay + 5.0, color: Color::Cyan });
+                if pending {
+                    c.draw(&Circle { x: 0.0, y: ay, radius: release_r, color: Color::Cyan });
+                }
                 c.print(-12.0, 80.0, Line::from("far").fg(Color::DarkGray));
                 c.print(-18.0, -84.0, Line::from("handle").fg(Color::DarkGray));
             });
@@ -500,6 +587,13 @@ impl BalanceScreen {
                 Span::raw(if sel { "   ◂ ▸" } else { "" }),
             ]));
         }
+        lines.push(Line::from(vec![
+            Span::raw("   "),
+            Span::styled(format!("{:<11}", "throw aim"), Style::new()),
+            Span::raw(" "),
+            Span::styled(format!("{:>+9.0}", self.aim), Style::new().fg(Color::Cyan)),
+            Span::styled(" mm  [ ]", Style::new().fg(Color::DarkGray)),
+        ]));
         lines.push(Line::from(Span::styled(
             format!(
                 "   step {}   profile {}",

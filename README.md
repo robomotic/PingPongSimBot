@@ -63,10 +63,10 @@ camera noise.
 
 | Screen | What it does |
 |---|---|
-| **Balance** | Space starts (rest → level → wait for the ball → balance). It shows the blade from above with the ball, its trail and the tilt arrow; a **live tuning** panel (↑↓ choose, ←→ change, applied at once); live statistics (offset, wobble Hz/mm, servo lag, current, latency, deadband); the distance-from-centre sparkline; and a status log. `0`/`1`/`2` load the first-run / test A / test B gains, `s` saves the tuning, Esc stops and returns to the start pose. |
+| **Balance** | Space starts (from rest or level → level → wait for the ball → balance). It shows the blade from above with the ball, its trail and the tilt arrow; a **live tuning** panel (↑↓ choose, ←→ change, applied at once); live statistics (offset, wobble Hz/mm, servo lag, current, latency, deadband); the distance-from-centre sparkline; and a status log. `0`/`1`/`2` load the first-run / test A / test B gains, `s` saves the tuning, `t` **throws the ball back** (see below), Esc stops and returns to the start pose. |
 | **Home** | Station (`x` stop/start, asks first), camera (`c` re-attach after the station), bus (`r` read-only check: servos, voltage, temperature, gripper load), config status. Quitting offers to restart a station the app stopped. |
 | **Results** | Every run in `paddle_logs/` and `data/` with its statistics (same as `tools/analyze_run.py`). `c` marks a reference run for a side-by-side comparison with a green/red Δ. |
-| **Pose** | All 8 servos live (goal, present, miss, distance from level, load, temperature). ↑↓ joint, ←→ move by 1/5/20 ticks, `l`/`r` go to level/rest (asks first), `L`/`R` save level/rest, `G` save the grip. Each joint stays within `safety.pose_limit_ticks` of level, so manual moves stay above the table. The gripper (M8) is in the same table, with automatic back-off above `safety.grip_backoff_load`. Replaces `jog` and `grip`. |
+| **Pose** | All 8 servos live (goal, present, miss, distance from level, load, temperature). ↑↓ joint, ←→ move by 1/5/20 ticks, `l`/`r` go to level/rest (asks first), `L`/`R` save level/rest, `G` save the grip, M8 ←/→ close/open the gripper (steps up to 50 ticks), `t` throw preview without the ball (10/25/50/100 % speed), `T` save the throw end pose. Each joint stays within `safety.pose_limit_ticks` of level, so manual moves stay above the table. The gripper (M8) is in the same table, with automatic back-off above `safety.grip_backoff_load`. Replaces `jog` and `grip`. |
 | **Camera** | Live picture (true-colour half blocks) with the detected ball marked. `m` switches to the **detector view** (pixels in the colour range turn magenta). ↑↓ ←→ tune hue / saturation / brightness limits, minimum blob size and exposure **live**; `s` saves them. Shows fps, found %, false blobs, the ball's colour and its blade position. |
 | **Calibrate** | Camera-map wizard: highlights the mark to use, **captures automatically** when the ball has been still for ~1 s, fits the map, shows the error per mark, Enter saves. Then `t` (needs ARMED): **axis calibration**, which tilts the wrist 3° per axis, measures where the ball rolls, and shows the directions and the angle between them; Enter saves. (The joint probe is still `probe-joints`.) |
 | System ID | in [ElRobotSysId](https://github.com/robomotic/ElRobotSysId) (needs its table safety area first) |
@@ -121,6 +121,41 @@ sudo systemctl start normacore-station
 ```
 
 All settings and calibrations live in `paddle.toml`. Each run writes `paddle_logs/run_<stamp>.csv`.
+
+## Throw back
+
+A fun mode: while the ball balances, ARM (`a`) and press `t`. After a 2 s countdown (any key cancels) and as soon as
+the ball is within 25 mm of the centre, the arm flips the blade from flat to about upright, face toward the camera side,
+in one fast move. The ball leaves from the far edge and flies in an arc back over the arm. Then the arm holds, returns
+to level and waits for the next ball.
+
+| | |
+|---|---|
+| Motion | Level → `throw.end` (taught on the Pose screen with `T`; default: the pose taught on 2026-11-20). Mostly wrist pitch M6 (−655 ticks), plus elbow M3 (−179) and M4 (−54). |
+| How it runs | The servos run the move themselves: each moving joint gets its goal, a Goal Speed and an Acc, scaled by distance so they all arrive together (0.33 s at full speed). Nothing is streamed during the move. The previous speed/acc are always restored. |
+| Safety | Needs ARMED; starts from level only; the end pose must be inside `throw.limit_ticks` of level; a joint stalled above `throw.abort_load` or a move far slower than planned stops the arm where it is. |
+| Simulation | `tools/throw_sim.py` (MuJoCo, URDF + 68 g paddle + 2.7 g ball): at full speed the ball leaves at ~2.0 m/s, 47° up, peaks ~55 cm above the table and lands ~50 cm on the camera side; peak torque 1.3 N m (stall 2.94). **Below ~75 % speed the ball hits the camera or rolls into the jaws**: run slow previews without the ball. |
+| Joint angles | The sim uses the station viewer's mapping (calibrated range → URDF limits), checked against the real arm at level. The controller's own `zero = 2048, sign = −1` is only right for small relative moves. |
+
+**Aim (distance dial):** `[` / `]` on the Balance screen set `throw.aim_y_mm`, where on the blade the ball is thrown
+from (cyan + on the blade; `s` saves it). During the countdown the balancer steers the ball there and throws once it has
+settled within `throw.release_mm` (8 mm; steering is capped at `throw.aim_max_tilt_deg` = 4°, aim at ±`throw.aim_limit_mm` = 25 mm). In MuJoCo (full speed, 89° end pose):
+
+| Aim (mm, − = handle side) | −50 | −40 | −20 | 0 | +20 | +40 |
+|---|---|---|---|---|---|---|
+| Launch angle | 39° | 42° | 50° | 56° | 64° | 71° |
+| Distance toward the camera side | 2.6 m | 2.5 m | 2.1 m | 1.7 m | 1.2 m | 0.6 m |
+
+Flipping further than ~89° adds nothing (the ball has left); the ball's rolling speed before the throw changes the
+distance by only ~±10 cm per 60 mm/s. Real distances will be shorter (the simulated servos reach full stall torque).
+
+Order for the first real tries: Pose → `l` (level) → `t` `1` (10 %, no ball) → `t` `2` → `t` `3` → `t` `4`, watching the
+paddle in the gripper; then Balance with the ball and `t` at 100 %.
+
+```bash
+python tools/throw_sim.py --throw                       # 25/50/75/100 % speed: release, apex, landing, torques
+python tools/throw_sim.py --throw --speed 1 --video throw.mp4 --slow 8   # 8x slow motion
+```
 
 ## Calibrations: what they are and when to redo them
 

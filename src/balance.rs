@@ -7,7 +7,8 @@
 
 use crate::arm::{joint_rad, wrist_of};
 use crate::bus::MotorState;
-use crate::config::{Config, ControlConfig, N_MOTORS, WRIST};
+use crate::throw::{ThrowPlan, ThrowReport};
+use crate::config::{Config, ControlConfig, ThrowConfig, N_MOTORS, WRIST};
 use crate::control::{AxesMap, Backlash, BallPid};
 use crate::estimator::{AlphaBeta, Homography};
 use crate::kinematics::WristModel;
@@ -130,6 +131,10 @@ pub struct Balancer {
     uv: Vector2<f64>,
     balance_start: Option<Instant>,
     longest: f64,
+    /// Where the controller holds the ball (blade mm). The centre, except while aiming a throw.
+    target: Vector2<f64>,
+    /// Tilt cap while steering to a target away from the centre (rad).
+    target_max_tilt: Option<f64>,
 }
 
 /// Image map and axes from the config (axes normalised if configured).
@@ -162,6 +167,8 @@ impl Balancer {
             uv: Vector2::zeros(),
             balance_start: None,
             longest: 0.0,
+            target: Vector2::zeros(),
+            target_max_tilt: None,
         })
     }
 
@@ -185,8 +192,32 @@ impl Balancer {
         self.cfg.control = c;
     }
 
+    /// Hold the ball at `t` (blade mm) instead of the centre.
+    pub fn set_target(&mut self, t: Vector2<f64>) {
+        if (t - self.target).norm() > 1e-9 {
+            // The integral was built up against the old setpoint; it would fight the new one.
+            self.pid.reset_integral();
+        }
+        self.target = t;
+        self.target_max_tilt = (t.norm() > 1e-9).then(|| self.cfg.throw.aim_max_tilt_deg.to_radians());
+    }
+
+    pub fn target(&self) -> Vector2<f64> {
+        self.target
+    }
+
     pub fn set_paused(&mut self, p: bool) {
         self.paused = p;
+    }
+
+    /// Camera pixel -> blade mm (the calibrated homography).
+    pub fn px_to_mm(&self, px: Vector2<f64>) -> Vector2<f64> {
+        self.h.apply(px)
+    }
+
+    /// The ball is about to be thrown: close the balance segment (counts toward the longest balance).
+    pub fn end_for_throw(&mut self) {
+        self.end_balance();
     }
 
     /// Call after the plant finished a [`Action::ReturnToLevel`].
@@ -244,7 +275,12 @@ impl Balancer {
                     let ahead = c.control.predict_ms / 1e3;
                     let p = self.filt.predict(ahead, accel);
                     let v = self.filt.vel + accel * ahead;
-                    let blade_tilt = self.pid.step(p, v, dt);
+                    let mut blade_tilt = self.pid.step(p - self.target, v, dt);
+                    if let Some(m) = self.target_max_tilt {
+                        if blade_tilt.norm() > m {
+                            blade_tilt *= m / blade_tilt.norm();
+                        }
+                    }
                     self.uv = self.axes.blade_to_uv(blade_tilt);
                     let goal = self.wrist.ticks_for(&self.cfg, self.uv);
                     let step = (0..3).map(|k| (goal[k] as i32 - current_wrist[k] as i32).abs()).max().unwrap_or(0);
@@ -295,6 +331,8 @@ pub trait Plant {
     async fn read_wrist(&mut self) -> Result<[MotorState; 3]>;
     /// Simulation only: put a ball on the paddle.
     fn place_ball(&mut self) {}
+    /// One fast throw move (see `throw.rs`).
+    async fn throw(&mut self, plan: &ThrowPlan, cfg: &ThrowConfig) -> Result<ThrowReport>;
 }
 
 /// The real arm and camera. Linux only (V4L2).
@@ -319,23 +357,42 @@ impl RealPlant {
         use st3215::protocol::RamRegister;
         let h = if roi { cfg.camera.homography.map(|h| Homography::from_row_major(&h)) } else { None };
         let (mut arm, start) = crate::arm::Arm::open(cfg).await?;
-        if let Some(rest) = cfg.poses.rest.filter(|_| check_rest) {
-            for j in 0..7 {
-                let d = (start[j] as i32 - rest[j] as i32).abs();
-                if d > cfg.safety.start_tolerance_ticks as i32 {
-                    bail!(
-                        "M{} is {d} ticks from the rest pose (limit {}). Wrong port, or the arm is not at rest.",
-                        j + 1,
-                        cfg.safety.start_tolerance_ticks
-                    );
-                }
-            }
+        if check_rest {
+            check_start_pose(&start, cfg)?;
         }
         let acc: Vec<(u8, u8)> = WRIST.iter().map(|&j| (j as u8 + 1, cfg.bus.wrist_acc)).collect();
         arm.bus.sync_write_u8(RamRegister::Acc, &acc).await?;
         let cam = crate::vision::capture::start(&cfg.camera, h, None)?;
         Ok(Self { arm, cam, start })
     }
+}
+
+/// A run may start from the rest pose or the level pose (where it goes first anyway): every joint of M1..M7 within
+/// `safety.start_tolerance_ticks` of either. Catches a wrong bus port or an arm left somewhere unexpected.
+pub fn check_start_pose(start: &[u16], cfg: &Config) -> Result<()> {
+    let tol = cfg.safety.start_tolerance_ticks as i32;
+    let poses: Vec<(&str, [u16; N_MOTORS])> =
+        [("rest", cfg.poses.rest), ("level", cfg.poses.level)].into_iter().filter_map(|(n, p)| p.map(|p| (n, p))).collect();
+    if poses.is_empty() {
+        return Ok(());
+    }
+    // Worst joint against each pose.
+    let worst = |p: &[u16; N_MOTORS]| (0..7).map(|j| (j, (start[j] as i32 - p[j] as i32).abs())).max_by_key(|&(_, d)| d).unwrap();
+    if poses.iter().any(|(_, p)| worst(p).1 <= tol) {
+        return Ok(());
+    }
+    let detail: Vec<String> = poses
+        .iter()
+        .map(|(n, p)| {
+            let (j, d) = worst(p);
+            format!("M{} is {d} ticks from {n}", j + 1)
+        })
+        .collect();
+    bail!(
+        "the arm is not at rest or level ({}; limit {}). Go to rest or level on the Pose screen (r / l), or check the bus port.",
+        detail.join(", "),
+        tol
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -368,6 +425,30 @@ impl Plant for RealPlant {
             out[k] = self.arm.bus.read_state(WRIST[k] as u8 + 1).await?;
         }
         Ok(out)
+    }
+    async fn throw(&mut self, plan: &ThrowPlan, cfg: &ThrowConfig) -> Result<ThrowReport> {
+        // Record camera frames while the arm moves (the camera is on the gripper and sees the ball leave).
+        let t0 = Instant::now();
+        let mut cam = Vec::new();
+        let rep = {
+            let rx = &mut self.cam.rx;
+            let frames = &mut cam;
+            let watch = async move {
+                while rx.changed().await.is_ok() {
+                    let d = *rx.borrow_and_update();
+                    let t = d.t.checked_duration_since(t0).map_or(0.0, |x| x.as_secs_f64());
+                    frames.push(crate::throw::CamSample { t, px: d.blob.map(|b| b.px), area: d.blob.map_or(0, |b| b.area) });
+                }
+                std::future::pending::<()>().await
+            };
+            tokio::select! {
+                r = self.arm.throw_move(plan, cfg.abort_load, cfg.timeout_factor, cfg.record_after_s, cfg.torque_limit) => r,
+                _ = watch => unreachable!(),
+            }
+        };
+        let mut rep = rep?;
+        rep.cam = cam;
+        Ok(rep)
     }
 }
 
@@ -425,6 +506,11 @@ pub enum Cmd {
     SetControl(ControlConfig),
     Pause(bool),
     PlaceBall,
+    /// Start the throw countdown (the ball must be balancing).
+    Throw,
+    CancelThrow,
+    /// Throw aim along the handle axis (mm), see `throw.aim_y_mm`.
+    SetAim(f64),
     Stop,
 }
 
@@ -437,6 +523,8 @@ pub struct Snapshot {
     pub current: [f64; 3],
     pub latency_ms: f64,
     pub control: ControlConfig,
+    /// Throw countdown: seconds left (0 = waiting for the ball to settle). None = no throw pending.
+    pub throw_in: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -477,6 +565,9 @@ pub async fn run_loop<P: Plant>(
     let mut no_frame_since: Option<Instant> = None;
     let mut wrist_state = [MotorState::default(); 3];
     let no_frame = Duration::from_secs_f64(bal.cfg.safety.no_frame_s);
+    // Throw countdown: (when the countdown ends, the plan).
+    let mut throw_at: Option<(Instant, ThrowPlan)> = None;
+    let mut throws = 0u32;
 
     let result: Result<()> = async {
         loop {
@@ -487,6 +578,38 @@ pub async fn run_loop<P: Plant>(
                         Some(Cmd::SetControl(c)) => { bal.set_control(c); emit(Event::Status("gains updated".into())); }
                         Some(Cmd::Pause(p)) => { bal.set_paused(p); emit(Event::Status(if p { "paused: holding level".into() } else { "resumed: put the ball on the paddle".into() })); }
                         Some(Cmd::PlaceBall) => plant.place_ball(),
+                        Some(Cmd::Throw) => {
+                            if bal.phase() != Phase::Balance {
+                                emit(Event::Status("throw: put the ball on the paddle first".into()));
+                            } else {
+                                match crate::throw::plan(&bal.cfg, &level, bal.cfg.throw.speed) {
+                                    Ok(p) => {
+                                        let lim = bal.cfg.throw.aim_limit_mm.abs();
+                                        let aim = bal.cfg.throw.aim_y_mm.clamp(-lim, lim);
+                                        bal.set_target(Vector2::new(0.0, aim));
+                                        emit(Event::Status(format!(
+                                            "THROW in {:.0} s at {:.0} % speed ({:.2} s move), aim {aim:+.0} mm: any key cancels",
+                                            bal.cfg.throw.delay_s, p.speed_frac * 100.0, p.duration_s
+                                        )));
+                                        throw_at = Some((Instant::now() + Duration::from_secs_f64(bal.cfg.throw.delay_s), p));
+                                    }
+                                    Err(e) => emit(Event::Status(format!("throw refused: {e:#}"))),
+                                }
+                            }
+                        }
+                        Some(Cmd::CancelThrow) => {
+                            bal.set_target(Vector2::zeros());
+                            if throw_at.take().is_some() {
+                                emit(Event::Status("throw cancelled".into()));
+                            }
+                        }
+                        Some(Cmd::SetAim(a)) => {
+                            let lim = bal.cfg.throw.aim_limit_mm.abs();
+                            bal.cfg.throw.aim_y_mm = a.clamp(-lim, lim);
+                            if throw_at.is_some() {
+                                bal.set_target(Vector2::new(0.0, bal.cfg.throw.aim_y_mm));
+                            }
+                        }
                     }
                     continue;
                 }
@@ -504,6 +627,30 @@ pub async fn run_loop<P: Plant>(
             last_frame = Instant::now();
 
             let (action, tele) = bal.on_frame(&det, wrist_of(&plant.cmd()));
+            // Throw: after the countdown, go as soon as the ball is near the centre and slow.
+            let mut throw_now = None;
+            let mut throw_in = None;
+            if let Some((at, _)) = &throw_at {
+                let tc = bal.cfg.throw.clone();
+                let now = Instant::now();
+                if tele.phase != Phase::Balance || matches!(action, Action::ReturnToLevel(_)) {
+                    throw_at = None;
+                    bal.set_target(Vector2::zeros());
+                    emit(Event::Status("throw cancelled: the ball left the paddle".into()));
+                } else if now < *at {
+                    throw_in = Some((*at - now).as_secs_f64());
+                } else if (tele.pos - bal.target()).norm() <= tc.release_mm && tele.vel.norm() <= tc.settle_speed_mm_s {
+                    throw_now = throw_at.take().map(|(_, p)| p);
+                } else if (now - *at).as_secs_f64() > tc.settle_timeout_s {
+                    throw_at = None;
+                    bal.set_target(Vector2::zeros());
+                    emit(Event::Status(format!(
+                        "throw cancelled: the ball didn't settle within {:.0} mm of the aim point", tc.release_mm
+                    )));
+                } else {
+                    throw_in = Some(0.0);
+                }
+            }
             match &action {
                 Action::Hold => {}
                 Action::SendWrist(g) => plant.send_wrist(*g).await?,
@@ -533,12 +680,41 @@ pub async fn run_loop<P: Plant>(
                 current: [wrist_state[0].current_ma, wrist_state[1].current_ma, wrist_state[2].current_ma],
                 latency_ms,
                 control: bal.cfg.control.clone(),
+                throw_in,
             };
             log.write(&snap)?;
             if let Some(e) = &snap.tele.event {
                 emit(Event::Status(e.clone()));
             }
             emit(Event::Frame(Box::new(snap)));
+            if let Some(plan) = throw_now {
+                emit(Event::Status("THROW".into()));
+                bal.end_for_throw();
+                let rep = plant.throw(&plan, &bal.cfg.throw).await;
+                throws += 1;
+                let rep = rep?;
+                let tlog = log.path.with_file_name(
+                    log.path.file_name().and_then(|n| n.to_str()).unwrap_or("run.csv").replacen("run_", "throw_", 1).replacen("sim_", "throw_sim_", 1)
+                        .replace(".csv", &format!("_{throws}.csv")),
+                );
+                let saved = crate::throw::write_log(&tlog, &plan, &rep, |px| bal.px_to_mm(px));
+                emit(Event::Status(format!(
+                    "{}; log {}",
+                    rep.summary(),
+                    match &saved {
+                        Ok(()) => tlog.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string(),
+                        Err(e) => format!("not saved: {e:#}"),
+                    }
+                )));
+                let rest = (bal.cfg.throw.hold_s - bal.cfg.throw.record_after_s).max(0.0);
+                tokio::time::sleep(Duration::from_secs_f64(rest)).await;
+                emit(Event::Status("back to level...".into()));
+                plant.move_to(&level, bal.cfg.throw.return_s).await?;
+                bal.set_target(Vector2::zeros());
+                bal.returned_to_level();
+                emit(Event::Status(format!("level: put the ball on the paddle ({throws} throw{} so far)", if throws == 1 { "" } else { "s" })));
+                continue;
+            }
             if let Action::ReturnToLevel(_) = action {
                 plant.move_to(&level, 0.7).await?;
                 bal.returned_to_level();
@@ -562,4 +738,24 @@ pub async fn run_loop<P: Plant>(
     };
     emit(Event::Finished(summary.clone()));
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_may_start_at_rest_or_at_level() {
+        let mut cfg = Config::example();
+        let level = cfg.level().unwrap();
+        let mut rest = level;
+        rest[5] += 290; // like the real rest pose: M6 290 ticks from level
+        cfg.poses.rest = Some(rest);
+        assert!(check_start_pose(&level, &cfg).is_ok(), "at level");
+        assert!(check_start_pose(&rest, &cfg).is_ok(), "at rest");
+        let mut off = level;
+        off[2] += 400;
+        let e = check_start_pose(&off, &cfg).unwrap_err().to_string();
+        assert!(e.contains("M3 is 400 ticks from level"), "{e}");
+    }
 }

@@ -3,7 +3,8 @@
 
 use crate::arm::Arm;
 use crate::bus::MotorState;
-use crate::config::Config;
+use crate::config::{Config, ThrowConfig};
+use crate::throw::ThrowPlan;
 use crate::control::min_jerk;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -14,6 +15,8 @@ pub enum DevCmd {
     MoveArm { goals: [u16; 7], secs: f64 },
     /// Set the gripper (M8) goal.
     Grip(u16),
+    /// Throw move, hold, then a smooth return to `back`.
+    Throw { plan: ThrowPlan, cfg: ThrowConfig, back: [u16; 7], return_s: f64 },
     Close,
 }
 
@@ -22,6 +25,8 @@ pub enum DevMsg {
     Opened { goals: [u16; 8] },
     State { states: [MotorState; 8], torque8: bool },
     Moving(bool),
+    /// Result line of a throw move.
+    Throw(String),
     Error(String),
     Closed,
 }
@@ -94,6 +99,32 @@ pub fn open(cfg: &Config, sim: bool) -> Device {
                             send(DevMsg::Moving(true));
                         }
                         Some(DevCmd::Grip(g)) => arm.goal[7] = g as f64,
+                        Some(DevCmd::Throw { plan, cfg, back, return_s }) => {
+                            send(DevMsg::Moving(true));
+                            let mut from = [0.0; 7];
+                            from.copy_from_slice(&arm.goal[..7]);
+                            let to = plan.goals.map(|t| t as f64);
+                            // Fast flip (linear in the planned time), hold, then the smooth return below.
+                            let t0 = Instant::now();
+                            let mut tick = tokio::time::interval(Duration::from_millis(20));
+                            loop {
+                                tick.tick().await;
+                                let s = (t0.elapsed().as_secs_f64() / plan.duration_s.max(0.05)).min(1.0);
+                                for j in 0..7 {
+                                    arm.goal[j] = from[j] + (to[j] - from[j]) * s;
+                                }
+                                let states = arm.step(0.02);
+                                send(DevMsg::State { states, torque8: true });
+                                if s >= 1.0 {
+                                    break;
+                                }
+                            }
+                            send(DevMsg::Throw(format!("throw done in {:.2} s (simulated)", plan.duration_s)));
+                            tokio::time::sleep(Duration::from_secs_f64(cfg.hold_s)).await;
+                            let mut f2 = [0.0; 7];
+                            f2.copy_from_slice(&arm.goal[..7]);
+                            moving = Some((f2, back.map(|t| t as f64), Instant::now(), return_s));
+                        }
                     },
                     _ = tick.tick() => {
                         if let Some((from, to, t0, secs)) = moving {
@@ -138,6 +169,34 @@ pub fn open(cfg: &Config, sim: bool) -> Device {
                         send(DevMsg::Moving(true));
                         if let Err(e) = arm.move_to(&goals, secs).await {
                             send(DevMsg::Error(format!("move failed: {e:#}")));
+                        }
+                        send(DevMsg::Moving(false));
+                    }
+                    Some(DevCmd::Throw { plan, cfg, back, return_s }) => {
+                        send(DevMsg::Moving(true));
+                        match arm.throw_move(&plan, cfg.abort_load, cfg.timeout_factor, 0.0, cfg.torque_limit).await {
+                            Ok(rep) => {
+                                send(DevMsg::Throw(rep.summary()));
+                                tokio::time::sleep(Duration::from_secs_f64(cfg.hold_s)).await;
+                                if rep.aborted.is_none() {
+                                    if let Err(e) = arm.move_to(&back, return_s).await {
+                                        send(DevMsg::Error(format!("return to level failed: {e:#}")));
+                                    }
+                                } else {
+                                    let mut g = [0u16; 8];
+                                    g[..7].copy_from_slice(&arm.cmd);
+                                    g[7] = grip_goal;
+                                    send(DevMsg::Opened { goals: g });
+                                    send(DevMsg::Error("throw aborted: the arm holds where it is; check it, then go to level (l)".into()));
+                                }
+                            }
+                            Err(e) => {
+                                let mut g = [0u16; 8];
+                                g[..7].copy_from_slice(&arm.cmd);
+                                g[7] = grip_goal;
+                                send(DevMsg::Opened { goals: g });
+                                send(DevMsg::Error(format!("throw failed: {e:#}")));
+                            }
                         }
                         send(DevMsg::Moving(false));
                     }

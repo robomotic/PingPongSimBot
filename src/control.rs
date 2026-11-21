@@ -67,6 +67,11 @@ impl BallPid {
         self.out = Vector2::zeros();
     }
 
+    /// Forget the integral only (e.g. when the setpoint moves); the output keeps its rate limit.
+    pub fn reset_integral(&mut self) {
+        self.integral = Vector2::zeros();
+    }
+
     /// New gains/limits; the integral and the last output are kept (live tuning).
     pub fn set_cfg(&mut self, cfg: ControlConfig) {
         self.cfg = cfg;
