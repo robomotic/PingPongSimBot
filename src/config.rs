@@ -203,6 +203,8 @@ pub struct Safety {
     pub pose_limit_ticks: [u16; 7],
     /// Gripper (M8) load at which the Pose screen backs the jaws off by itself (0..1000).
     pub grip_backoff_load: i16,
+    /// Pose screen `o`: how far to open the jaws from where they are (ticks; higher = more open).
+    pub grip_open_ticks: u16,
 }
 
 impl Default for Config {
@@ -306,6 +308,7 @@ impl Default for Safety {
             ball_confirm_frames: 10,
             pose_limit_ticks: [150, 150, 150, 200, 400, 300, 400],
             grip_backoff_load: 600,
+            grip_open_ticks: 400,
         }
     }
 }
