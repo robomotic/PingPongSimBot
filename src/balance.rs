@@ -630,6 +630,7 @@ pub async fn run_loop<P: Plant>(
             // Throw: after the countdown, go as soon as the ball is near the centre and slow.
             let mut throw_now = None;
             let mut throw_in = None;
+            let mut throw_note = String::new();
             if let Some((at, _)) = &throw_at {
                 let tc = bal.cfg.throw.clone();
                 let now = Instant::now();
@@ -639,7 +640,16 @@ pub async fn run_loop<P: Plant>(
                     emit(Event::Status("throw cancelled: the ball left the paddle".into()));
                 } else if now < *at {
                     throw_in = Some((*at - now).as_secs_f64());
-                } else if (tele.pos - bal.target()).norm() <= tc.release_mm && tele.vel.norm() <= tc.settle_speed_mm_s {
+                } else if !tc.require_aim
+                    || ((tele.pos - bal.target()).norm() <= tc.release_mm && tele.vel.norm() <= tc.settle_speed_mm_s)
+                {
+                    // Default: throw when the countdown ends, wherever the ball is (it was steered toward the aim
+                    // during the countdown). With throw.require_aim, wait for it to settle on the aim first.
+                    throw_note = format!(
+                        " (ball {:.0} mm from the aim, {:.0} mm/s)",
+                        (tele.pos - bal.target()).norm(),
+                        tele.vel.norm()
+                    );
                     throw_now = throw_at.take().map(|(_, p)| p);
                 } else if (now - *at).as_secs_f64() > tc.settle_timeout_s {
                     throw_at = None;
@@ -688,7 +698,7 @@ pub async fn run_loop<P: Plant>(
             }
             emit(Event::Frame(Box::new(snap)));
             if let Some(plan) = throw_now {
-                emit(Event::Status("THROW".into()));
+                emit(Event::Status(format!("THROW{throw_note}")));
                 bal.end_for_throw();
                 let rep = plant.throw(&plan, &bal.cfg.throw).await;
                 throws += 1;

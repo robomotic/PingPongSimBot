@@ -46,7 +46,11 @@ pub struct ThrowConfig {
     pub aim_limit_mm: f64,
     /// Max blade tilt while steering the ball to the aim point (deg): keeps it from being flung off.
     pub aim_max_tilt_deg: f64,
-    /// After the countdown, throw as soon as the ball is within this radius of the aim point (mm) ...
+    /// false (default): throw as soon as the countdown ends, wherever the ball is; the countdown still steers it toward
+    /// the aim. true: wait (up to `settle_timeout_s`) until the ball is within `release_mm` of the aim and slow, else
+    /// cancel.
+    pub require_aim: bool,
+    /// With `require_aim`: throw once the ball is within this radius of the aim point (mm) ...
     pub release_mm: f64,
     /// ... and slower than this (mm/s).
     pub settle_speed_mm_s: f64,
@@ -82,6 +86,7 @@ impl Default for ThrowConfig {
             aim_y_mm: 0.0,
             aim_limit_mm: 25.0,
             aim_max_tilt_deg: 4.0,
+            require_aim: false,
             release_mm: 8.0,
             settle_speed_mm_s: 60.0,
             settle_timeout_s: 4.0,

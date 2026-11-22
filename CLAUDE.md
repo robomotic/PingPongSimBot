@@ -101,9 +101,9 @@ Read-only register dump: a READ-packet script with `~/lrenv/bin/python` (pyseria
   (now M3 2057, M4 3174, M6 1847) and re-taught the throw end for it (M3 −300, M4 −300, M6 −400 from level).
 - **50 Hz flicker** is real (still-ball blob area oscillates at 11.6 Hz = 100 Hz aliased at 29.5 fps). Exposure is now
   100 (10 ms, saved); keep exposure a multiple of 10 ms. Re-check the HSV limits in the Camera screen after recalibrating.
-- **Throws get cancelled** when the stuck ball rests outside `throw.release_mm` (8 mm) of the aim: last run it sat 12 mm
-  away. Offered: release_mm 15, and showing the ball's distance to the aim in the countdown title. The ball looks "on" the
-  aim on screen because the drawn ball is 40 mm wide. User has not decided; slop compensation was 0 (profile 1).
+- **Throw now always fires when the countdown ends** (2026-11-22, user's choice): the countdown steers the ball toward the
+  aim, then it throws wherever the ball is; the status line says how far from the aim it was. The old wait-for-the-aim
+  rule is `throw.require_aim = true` (with `release_mm`, `settle_timeout_s`).
 - `rest` still has M8 = 0 (saved while M8 was in overload): re-save R. Servos screen (P gain) not yet used on the arm.
 - Wi-Fi drops kill the app with the SSH session: suggest `tmux` (not installed on the Pi).
 - PRs: #3 (tested settings) and #4 (throw, stacked on #3, now also P gain screen, servo-fault reads) are open; the Pi

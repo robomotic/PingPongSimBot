@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-pub const HELP: [&str; 18] = [
+pub const HELP: [&str; 19] = [
     "Space        start (real arm: needs ARMED) · while running: pause / resume (holds level)",
     "Esc          stop: the arm returns to its start pose · when stopped: back to Home",
     "b            simulation: put a ball on the paddle",
@@ -31,6 +31,7 @@ pub const HELP: [&str; 18] = [
     "a            ARM / disarm the real arm",
     "t            THROW the ball back (needs ARMED and a balancing ball): 2 s countdown, then a fast flip to the",
     "             taught end pose ([throw] in paddle.toml) and back to level. Any key cancels the countdown.",
+    "             It throws when the countdown ends, wherever the ball is (throw.require_aim = true: wait for the aim).",
     "[ ]          throw aim: where on the blade the ball is thrown from (5 mm steps, ±25 mm). Toward the handle (-) throws",
     "             further, toward the far edge (+) a short high lob. Shown as a cyan + on the blade; s saves it.",
     "",
@@ -521,7 +522,7 @@ impl BalanceScreen {
                     let n = ((t / total) * 10.0).ceil() as usize;
                     format!(" THROW in {t:.1} s {}{} · any key cancels ", "█".repeat(n), "░".repeat(10 - n.min(10)))
                 } else {
-                    " THROW: waiting for the ball to settle · any key cancels ".to_string()
+                    " THROW: waiting for the ball to reach the aim (throw.require_aim) · any key cancels ".to_string()
                 }
             }
             (Run::Running { .. }, Some((_, true))) => " blade · paused ".to_string(),

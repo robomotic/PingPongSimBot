@@ -139,8 +139,9 @@ to level and waits for the next ball.
 | Joint angles | The sim uses the station viewer's mapping (calibrated range → URDF limits), checked against the real arm at level. The controller's own `zero = 2048, sign = −1` is only right for small relative moves. |
 
 **Aim (distance dial):** `[` / `]` on the Balance screen set `throw.aim_y_mm`, where on the blade the ball is thrown
-from (cyan + on the blade; `s` saves it). During the countdown the balancer steers the ball there and throws once it has
-settled within `throw.release_mm` (8 mm; steering is capped at `throw.aim_max_tilt_deg` = 4°, aim at ±`throw.aim_limit_mm` = 25 mm). In MuJoCo (full speed, 89° end pose):
+from (cyan + on the blade; `s` saves it). During the countdown the balancer steers the ball there; when the countdown ends it
+throws wherever the ball is (default). With `throw.require_aim = true` it waits instead until the ball has settled within
+`throw.release_mm` (8 mm; steering is capped at `throw.aim_max_tilt_deg` = 4°, aim at ±`throw.aim_limit_mm` = 25 mm). In MuJoCo (full speed, 89° end pose):
 
 | Aim (mm, − = handle side) | −50 | −40 | −20 | 0 | +20 | +40 |
 |---|---|---|---|---|---|---|
